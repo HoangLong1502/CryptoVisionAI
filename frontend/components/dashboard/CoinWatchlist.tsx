@@ -1,6 +1,7 @@
 'use client';
 
 import { TrendingDown, TrendingUp } from 'lucide-react';
+import FlashPrice from '../ui/FlashPrice';
 
 export type WatchlistRow = {
   symbol: string;
@@ -35,7 +36,7 @@ export default function CoinWatchlist({
       <div className="mb-4 flex items-center justify-between gap-2">
         <div>
           <h2 className="text-lg font-bold text-white">Live prices</h2>
-          <p className="text-xs text-slate-500">WebSocket updates ~every 10s · CoinGecko</p>
+          <p className="text-xs text-slate-500">Binance bookTicker · updates ~every 200ms</p>
         </div>
       </div>
       <div className="overflow-x-auto">
@@ -59,7 +60,11 @@ export default function CoinWatchlist({
                     <p className="font-mono font-bold text-white">{row.symbol}</p>
                     {row.name ? <p className="text-xs text-slate-500">{row.name}</p> : null}
                   </td>
-                  <td className="py-3 pr-4 text-right font-mono tabular-nums text-slate-100">{fmtUsd(row.price)}</td>
+                  <td className="py-3 pr-4 text-right">
+                    <FlashPrice symbol={row.symbol} price={Number(row.price) || 0} className="font-mono text-slate-100">
+                      {fmtUsd(row.price)}
+                    </FlashPrice>
+                  </td>
                   <td className="py-3 pr-4 text-right">
                     <span
                       className={`inline-flex items-center gap-1 font-mono text-xs font-semibold tabular-nums ${

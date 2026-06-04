@@ -5,6 +5,7 @@ import { Loader2, Sparkles, TrendingDown, TrendingUp, X } from 'lucide-react';
 import { useState } from 'react';
 import { getAgentDebate, getCoinDetail, type DebateResponse } from '../../lib/api';
 import AgentDebatePanel from '../agent/AgentDebatePanel';
+import FlashPrice from '../ui/FlashPrice';
 
 function fmtUsd(v: number | null | undefined) {
   if (v == null || Number.isNaN(v) || v <= 0) return '—';
@@ -27,9 +28,11 @@ function fmtLarge(v: number | null | undefined) {
 
 export default function CoinSymbolModal({
   symbol,
+  livePrice,
   onClose,
 }: {
   readonly symbol: string;
+  readonly livePrice?: number;
   readonly onClose: () => void;
 }) {
   const [showAiForm, setShowAiForm] = useState(false);
@@ -50,6 +53,7 @@ export default function CoinSymbolModal({
   });
 
   const prices = data?.prices;
+  const displayPrice = livePrice && livePrice > 0 ? livePrice : prices?.last;
   const changePct = data?.change_pct ?? 0;
   const up = changePct >= 0;
 
@@ -106,7 +110,9 @@ export default function CoinSymbolModal({
                 <div className="flex flex-wrap items-end justify-between gap-3">
                   <div>
                     <p className="text-xs uppercase tracking-wider text-slate-500">Current price</p>
-                    <p className="font-mono text-3xl font-bold tabular-nums text-white">{fmtUsd(prices?.last)}</p>
+                    <FlashPrice symbol={symbol} price={displayPrice ?? 0} className="font-mono text-3xl font-bold tabular-nums text-white">
+                      {fmtUsd(displayPrice)}
+                    </FlashPrice>
                   </div>
                   <span
                     className={`inline-flex items-center gap-1 rounded-lg px-3 py-1.5 font-mono text-lg font-bold tabular-nums ${

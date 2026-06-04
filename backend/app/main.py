@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.v1.routes import router as api_router
-from app.services.crypto_data import periodic_market_sync, sync_market_snapshot
+from app.services.binance_realtime import start_binance_realtime
 from app.services.market_ws import register as ws_register, unregister as ws_unregister
 
 app = FastAPI(title='Bot Coin AI Platform')
@@ -22,15 +22,7 @@ app.include_router(api_router, prefix='/api/v1')
 
 @app.on_event('startup')
 async def startup_event():
-    async def _bootstrap() -> None:
-        await asyncio.sleep(0.5)
-        try:
-            await sync_market_snapshot()
-        except Exception:
-            pass
-
-    asyncio.create_task(_bootstrap())
-    asyncio.create_task(periodic_market_sync())
+    asyncio.create_task(start_binance_realtime())
 
 
 @app.get('/')

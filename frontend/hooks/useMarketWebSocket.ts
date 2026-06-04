@@ -10,17 +10,42 @@ export type MarketWsMessage = {
   indices?: DashboardData['indices'];
   top_gainers?: DashboardData['top_gainers'];
   top_losers?: DashboardData['top_losers'];
+  quote_source?: string;
 };
+
+function numPrice(v: unknown): number {
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
 
 function patchWatchlist(prev: DashboardData['watchlist'], incoming: DashboardData['watchlist'] | undefined) {
   if (!incoming?.length) return prev;
   const bySym = new Map(incoming.map((row) => [String(row.symbol).toUpperCase(), row]));
-  return (prev ?? []).map((item) => {
+  let changed = false;
+  const next = (prev ?? []).map((item) => {
     const sym = typeof item === 'string' ? item : item.symbol;
     const upd = bySym.get(String(sym).toUpperCase());
     if (!upd) return typeof item === 'string' ? { symbol: item, price: 0, change: 0 } : item;
-    return typeof item === 'string' ? { symbol: item, ...upd } : { ...item, ...upd };
+    const base = typeof item === 'string' ? { symbol: item, price: 0, change: 0 } : item;
+    const newPrice = numPrice(upd.price ?? base.price);
+    const oldPrice = numPrice(base.price);
+    if (Math.abs(newPrice - oldPrice) > 1e-12) changed = true;
+    return { ...base, ...upd, price: newPrice, change_pct: upd.change_pct ?? upd.change ?? base.change_pct };
   });
+  return changed ? next : prev;
+}
+
+function patchIndices(prev: DashboardData['indices'], incoming: DashboardData['indices'] | undefined) {
+  if (!incoming?.length) return prev;
+  let changed = false;
+  const next = incoming.map((row) => {
+    const old = prev?.find((p) => p.symbol === row.symbol);
+    const price = numPrice(row.price);
+    const oldPrice = numPrice(old?.price);
+    if (Math.abs(price - oldPrice) > 1e-12) changed = true;
+    return { ...row, price, change: numPrice(row.change) };
+  });
+  return changed ? next : prev;
 }
 
 export function useMarketWebSocket(
@@ -54,21 +79,26 @@ export function useMarketWebSocket(
         try {
           const msg = JSON.parse(ev.data as string) as MarketWsMessage;
           if (msg.type !== 'market_update') return;
-          const prev = dataRef.current;
-          if (!prev) {
-            setData({
-              indices: msg.indices ?? [],
-              watchlist: msg.watchlist ?? [],
-              top_gainers: msg.top_gainers ?? [],
-              top_losers: msg.top_losers ?? [],
-              quote_source: '',
-            });
-            return;
-          }
-          setData({
-            ...prev,
-            watchlist: patchWatchlist(prev.watchlist, msg.watchlist),
-            indices: msg.indices?.length ? msg.indices : prev.indices,
+
+          setData((prev) => {
+            if (!prev) {
+              return {
+                indices: msg.indices ?? [],
+                watchlist: msg.watchlist ?? [],
+                top_gainers: msg.top_gainers ?? [],
+                top_losers: msg.top_losers ?? [],
+                quote_source: msg.quote_source ?? '',
+              };
+            }
+            const watchlist = patchWatchlist(prev.watchlist, msg.watchlist);
+            const indices = patchIndices(prev.indices, msg.indices);
+            if (watchlist === prev.watchlist && indices === prev.indices) return prev;
+            return {
+              ...prev,
+              watchlist,
+              indices,
+              quote_source: msg.quote_source ?? prev.quote_source,
+            };
           });
         } catch {
           /* ignore */
