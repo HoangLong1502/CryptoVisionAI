@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Set
 
 from fastapi import WebSocket
 
+from app.services.binance_realtime import build_overview_from_cache
 from app.services.crypto_data import sync_market_snapshot
 
 _connections: Set[WebSocket] = set()
@@ -13,7 +14,9 @@ _lock = asyncio.Lock()
 
 
 async def build_market_push_payload() -> Dict[str, Any]:
-    overview = await sync_market_snapshot()
+    overview = build_overview_from_cache()
+    if not overview.get('watchlist'):
+        overview = await sync_market_snapshot()
     return {
         'type': 'market_update',
         **overview,

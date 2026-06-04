@@ -17,7 +17,7 @@ services:
     container_name: bot-coin-frontend
     ports:
       # Host 3001 — avoids conflict with other apps on :3000 (Bot_Trading, Next dev, etc.)
-      - '3001:3000'
+      - '3001:3001'
     environment:
       - INTERNAL_API_URL=http://backend:8000/api/v1
       - NEXT_PUBLIC_WS_PORT=5566

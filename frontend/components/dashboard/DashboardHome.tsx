@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Loader2, Wifi, WifiOff } from 'lucide-react';
 import CoinWatchlist from './CoinWatchlist';
 import CoinSymbolModal from './CoinSymbolModal';
+import FlashPrice from '../ui/FlashPrice';
 import { apiUrl, WATCHLIST_FALLBACK_SYMBOLS } from '../../lib/api';
 import { useMarketWebSocket } from '../../hooks/useMarketWebSocket';
 
@@ -22,7 +23,7 @@ export type DashboardData = {
   quote_source?: string;
 };
 
-const REFRESH_MS = 60_000;
+const REFRESH_MS = 120_000;
 
 function emptyDashboard(): DashboardData {
   return {
@@ -94,9 +95,9 @@ export default function DashboardHome() {
           {data.indices.map((idx) => (
             <div key={idx.symbol} className="rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3">
               <p className="text-xs text-slate-500">{idx.symbol}</p>
-              <p className="font-mono text-lg font-bold text-white">
+              <FlashPrice symbol={idx.symbol} price={idx.price} className="font-mono text-lg font-bold text-white">
                 {idx.price > 0 ? `$${idx.price.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : '—'}
-              </p>
+              </FlashPrice>
               <p className={`text-xs font-mono ${idx.change >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                 {idx.change >= 0 ? '+' : ''}
                 {idx.change.toFixed(2)}%
@@ -117,7 +118,13 @@ export default function DashboardHome() {
 
       {data?.quote_source ? <p className="mt-4 text-center text-[10px] text-slate-600">{data.quote_source}</p> : null}
 
-      {detailSymbol ? <CoinSymbolModal symbol={detailSymbol} onClose={() => setDetailSymbol(null)} /> : null}
+      {detailSymbol ? (
+        <CoinSymbolModal
+          symbol={detailSymbol}
+          livePrice={watchlist.find((w) => w.symbol === detailSymbol)?.price}
+          onClose={() => setDetailSymbol(null)}
+        />
+      ) : null}
     </main>
   );
 }
