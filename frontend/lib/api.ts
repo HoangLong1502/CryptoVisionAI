@@ -79,6 +79,36 @@ export type UserBrief = {
     verdict_label: string;
     one_liner: string;
   }>;
+  timing_forecast?: TimingForecast;
+};
+
+export type TimingForecast = {
+  symbol?: string;
+  current_price?: number;
+  buy_window: {
+    start_date: string;
+    end_date: string;
+    label: string;
+    entry_price_low: number;
+    entry_price_high: number;
+    entry_price_ideal: number;
+    recommended: boolean;
+    note: string;
+  };
+  sell_window: {
+    start_date: string;
+    end_date: string;
+    label: string;
+    target_price_low: number;
+    target_price_high: number;
+    target_price_base: number;
+    stop_loss: number;
+    expected_gain_pct: number;
+    note: string;
+  };
+  confidence: 'high' | 'medium' | 'low';
+  methodology?: string;
+  disclaimer?: string;
 };
 
 export type DebateResponse = {

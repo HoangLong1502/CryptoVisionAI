@@ -270,9 +270,7 @@ $env:INTERNAL_API_URL="http://127.0.0.1:5566/api/v1"
 npm run dev
 ```
 
-Open **http://localhost:3000** (native Next.js port).
-
-Docker UI: **http://localhost:3001** (`3001:3000` avoids conflict with other apps on port 3000).
+Open **http://localhost:3001** (Bot Coin always uses port 3001 — do not use :3000, another app may be running there).
 
 The frontend proxies API calls via `/api/v1` on the same origin (except WebSocket).
 
@@ -312,7 +310,7 @@ Backend (`app/core/config.py`):
 ```yaml
 # docker-compose.yml
 ports:
-  - '3001:3000'   # frontend
+  - '3001:3001'   # frontend (Next.js dev on 3001)
   - '5577:8000'   # backend if 5566 is taken
 ```
 

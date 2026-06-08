@@ -2,17 +2,20 @@
 
 import {
   AlertTriangle,
+  CalendarClock,
   ChevronDown,
   ChevronUp,
+  Clock,
   Droplets,
   LineChart,
   Sparkles,
+  Target,
   TrendingDown,
   TrendingUp,
   Wallet,
 } from 'lucide-react';
 import { useState } from 'react';
-import type { DebateResponse } from '../../lib/api';
+import type { DebateResponse, TimingForecast } from '../../lib/api';
 
 const TONE_STYLES: Record<string, string> = {
   positive: 'border-emerald-500/30 bg-emerald-950/40 text-emerald-100',
@@ -36,7 +39,114 @@ function InsightIcon({ category, tone }: { readonly category: string; readonly t
   if (category === 'alert') return <AlertTriangle className={cls} />;
   if (category === 'technical') return <LineChart className={cls} />;
   if (category === 'consensus') return <Sparkles className={cls} />;
+  if (category === 'timing') return <CalendarClock className={cls} />;
   return <Sparkles className={cls} />;
+}
+
+function fmtPrice(v: number | undefined) {
+  if (v == null || v <= 0) return '—';
+  if (v >= 1) return `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `$${v.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 6 })}`;
+}
+
+function TimingForecastPanel({ timing }: { readonly timing: TimingForecast }) {
+  const confCls =
+    timing.confidence === 'high'
+      ? 'text-emerald-300'
+      : timing.confidence === 'low'
+        ? 'text-amber-300'
+        : 'text-cyan-300';
+
+  return (
+    <div className="rounded-2xl border border-violet-500/25 bg-gradient-to-br from-violet-950/40 to-slate-950 p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-violet-300">
+          <Clock className="h-4 w-4" />
+          AI buy / sell timing
+        </p>
+        <span className={`text-[10px] font-semibold uppercase ${confCls}`}>
+          {timing.confidence} confidence
+        </span>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-950/20 p-3">
+          <p className="flex items-center gap-1.5 text-xs font-semibold text-emerald-300">
+            <TrendingUp className="h-3.5 w-3.5" />
+            When to buy
+          </p>
+          <p className="mt-1 text-sm font-bold text-white">{timing.buy_window.label}</p>
+          <p className="mt-0.5 font-mono text-[11px] text-slate-400">
+            {timing.buy_window.start_date} → {timing.buy_window.end_date}
+          </p>
+          <div className="mt-2 space-y-1 text-xs text-slate-300">
+            <p>
+              Entry zone:{' '}
+              <span className="font-mono text-emerald-200">
+                {fmtPrice(timing.buy_window.entry_price_low)} – {fmtPrice(timing.buy_window.entry_price_high)}
+              </span>
+            </p>
+            <p>
+              Ideal entry:{' '}
+              <span className="font-mono font-semibold text-emerald-100">
+                {fmtPrice(timing.buy_window.entry_price_ideal)}
+              </span>
+            </p>
+          </div>
+          {timing.buy_window.recommended ? (
+            <span className="mt-2 inline-block rounded-md bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold uppercase text-emerald-200">
+              Buy window active
+            </span>
+          ) : null}
+          <p className="mt-2 text-[11px] leading-snug text-slate-400">{timing.buy_window.note}</p>
+        </div>
+
+        <div className="rounded-xl border border-rose-500/20 bg-rose-950/20 p-3">
+          <p className="flex items-center gap-1.5 text-xs font-semibold text-rose-300">
+            <Target className="h-3.5 w-3.5" />
+            When to sell & target price
+          </p>
+          <p className="mt-1 text-sm font-bold text-white">{timing.sell_window.label}</p>
+          <p className="mt-0.5 font-mono text-[11px] text-slate-400">
+            {timing.sell_window.start_date} → {timing.sell_window.end_date}
+          </p>
+          <div className="mt-2 space-y-1 text-xs text-slate-300">
+            <p>
+              Target price:{' '}
+              <span className="font-mono font-semibold text-rose-100">
+                {fmtPrice(timing.sell_window.target_price_base)}
+              </span>
+            </p>
+            <p>
+              Sell range:{' '}
+              <span className="font-mono text-rose-200">
+                {fmtPrice(timing.sell_window.target_price_low)} – {fmtPrice(timing.sell_window.target_price_high)}
+              </span>
+            </p>
+            <p>
+              Stop-loss:{' '}
+              <span className="font-mono text-amber-200">{fmtPrice(timing.sell_window.stop_loss)}</span>
+              {' · '}
+              Est. gain{' '}
+              <span
+                className={
+                  timing.sell_window.expected_gain_pct >= 0 ? 'text-emerald-300' : 'text-rose-300'
+                }
+              >
+                {timing.sell_window.expected_gain_pct >= 0 ? '+' : ''}
+                {timing.sell_window.expected_gain_pct.toFixed(1)}%
+              </span>
+            </p>
+          </div>
+          <p className="mt-2 text-[11px] leading-snug text-slate-400">{timing.sell_window.note}</p>
+        </div>
+      </div>
+
+      {timing.disclaimer ? (
+        <p className="mt-3 text-[10px] leading-snug text-slate-500">{timing.disclaimer}</p>
+      ) : null}
+    </div>
+  );
 }
 
 function VoteBar({ votes }: { readonly votes: { buy: number; hold: number; sell: number } }) {
@@ -122,9 +232,13 @@ export default function AgentDebatePanel({
         </div>
       </div>
 
+      {brief.timing_forecast ? <TimingForecastPanel timing={brief.timing_forecast} /> : null}
+
       <div className="space-y-2">
         <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Key takeaways</p>
-        {brief.insights.map((item, idx) => (
+        {brief.insights
+          .filter((item) => item.category !== 'timing')
+          .map((item, idx) => (
           <div
             key={`${item.category}-${idx}`}
             className={`flex gap-3 rounded-xl border p-3 ${TONE_STYLES[item.tone] ?? TONE_STYLES.neutral}`}

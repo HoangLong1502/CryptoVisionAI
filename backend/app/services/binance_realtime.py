@@ -35,6 +35,9 @@ SYMBOL_TO_BINANCE: Dict[str, str] = {
     'ATOM': 'atomusdt',
     'LTC': 'ltcusdt',
     'TRX': 'trxusdt',
+    'SHIB': 'shibusdt',
+    'NEAR': 'nearusdt',
+    'SUI': 'suiusdt',
 }
 
 BINANCE_TO_SYMBOL = {v.upper(): k for k, v in SYMBOL_TO_BINANCE.items()}

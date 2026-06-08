@@ -96,6 +96,7 @@ async def _run_debate(symbol: str, holdings: float) -> JSONResponse:
         extra = decision.get('extra', {}) or {}
         user_brief = build_coin_user_brief(
             sym, agent_results, coin_detail=detail, historical_analysis=hist, prices=prices,
+            indicators=agent_results.get('indicators'),
         )
 
         body = {

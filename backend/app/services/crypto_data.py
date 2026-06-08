@@ -27,6 +27,9 @@ COIN_REGISTRY: Dict[str, Dict[str, str]] = {
     'ATOM': {'id': 'cosmos', 'name': 'Cosmos'},
     'LTC': {'id': 'litecoin', 'name': 'Litecoin'},
     'TRX': {'id': 'tron', 'name': 'TRON'},
+    'SHIB': {'id': 'shiba-inu', 'name': 'Shiba Inu'},
+    'NEAR': {'id': 'near', 'name': 'NEAR Protocol'},
+    'SUI': {'id': 'sui', 'name': 'Sui'},
 }
 
 DEFAULT_WATCHLIST = list(COIN_REGISTRY.keys())
