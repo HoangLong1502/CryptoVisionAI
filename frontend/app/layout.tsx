@@ -7,6 +7,10 @@ import AppNavbar from '../components/layout/AppNavbar';
 export const metadata: Metadata = {
   title: 'Bot Coin AI',
   description: 'Multi-agent crypto analysis — live prices & buy/hold/sell recommendations',
+  icons: {
+    icon: '/favicon.svg',
+    shortcut: '/favicon.svg',
+  },
 };
 
 export default function RootLayout({ children }: { readonly children: ReactNode }) {

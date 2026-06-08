@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.services.crypto_technical import calculate_volume_profile
+from app.services.coin_timing_forecast import build_timing_forecast
 
 VERDICT_LABELS = {
     'buy': 'Consider BUY',
@@ -31,6 +32,7 @@ def build_coin_user_brief(
     coin_detail: Optional[Dict[str, Any]] = None,
     historical_analysis: Optional[Dict[str, Any]] = None,
     prices: Optional[List[Dict[str, Any]]] = None,
+    indicators: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     sym = symbol.upper()
     decision = agent_results.get('decision', {}) or {}
@@ -101,6 +103,41 @@ def build_coin_user_brief(
         'tone': 'positive' if verdict == 'buy' else 'warning' if verdict == 'sell' else 'neutral',
     })
 
+    timing = build_timing_forecast(
+        sym,
+        verdict=verdict,
+        holdings=holdings,
+        coin_detail=coin_detail,
+        historical_analysis=hist if hist.get('status') == 'ok' else None,
+        indicators=indicators,
+    )
+    bw = timing['buy_window']
+    sw = timing['sell_window']
+
+    def _p(v: float) -> str:
+        return f'${v:,.2f}' if v >= 1 else f'${v:.6f}'
+
+    insights.append({
+        'category': 'timing',
+        'title': 'Suggested buy window',
+        'text': (
+            f"{bw['label']} ({bw['start_date']} → {bw['end_date']}). "
+            f"Entry zone {_p(bw['entry_price_low'])} – {_p(bw['entry_price_high'])} "
+            f"(ideal {_p(bw['entry_price_ideal'])}). {bw['note']}"
+        ),
+        'tone': 'positive' if bw['recommended'] else 'neutral',
+    })
+    insights.append({
+        'category': 'timing',
+        'title': 'Estimated sell window & target',
+        'text': (
+            f"{sw['label']} ({sw['start_date']} → {sw['end_date']}). "
+            f"Target {_p(sw['target_price_base'])} (range {_p(sw['target_price_low'])} – {_p(sw['target_price_high'])}). "
+            f"Stop-loss ~{_p(sw['stop_loss'])} · est. gain {sw['expected_gain_pct']:+.1f}%."
+        ),
+        'tone': 'positive' if sw['expected_gain_pct'] > 0 else 'warning',
+    })
+
     verdict_label = VERDICT_LABELS.get(verdict, VERDICT_LABELS['hold'])
     tone = 'positive' if verdict == 'buy' else 'warning' if verdict == 'sell' else 'neutral'
 
@@ -150,4 +187,5 @@ def build_coin_user_brief(
         'positives': [i['title'] for i in insights if i['tone'] == 'positive'][:5],
         'agent_lines': agent_lines,
         'votes': {'buy': buy_v, 'hold': hold_v, 'sell': sell_v},
+        'timing_forecast': timing,
     }
