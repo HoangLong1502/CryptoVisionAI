@@ -21,6 +21,11 @@ export type DashboardData = {
     change_pct?: number;
     volume_24h?: number;
     is_custom?: boolean;
+    ai_verdict?: string;
+    ai_label?: string;
+    ai_confidence?: number;
+    ai_buy_votes?: number;
+    is_buy_pick?: boolean;
   }>;
   top_gainers: Array<{ symbol: string; change_pct?: number; change?: number }>;
   top_losers: Array<{ symbol: string; change_pct?: number; change?: number }>;

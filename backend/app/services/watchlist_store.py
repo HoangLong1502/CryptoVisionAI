@@ -1,6 +1,7 @@
 """Custom watchlist — persist user-added coins and register them for full market support."""
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from pathlib import Path
@@ -254,6 +255,10 @@ async def add_coin(*, symbol: Optional[str] = None, coin_id: Optional[str] = Non
     await sync_market_snapshot()
     request_stream_refresh()
     await notify_market_update()
+
+    from app.services.coin_screener import request_signal_refresh
+
+    asyncio.create_task(request_signal_refresh(sym))
 
     return {
         'ok': True,

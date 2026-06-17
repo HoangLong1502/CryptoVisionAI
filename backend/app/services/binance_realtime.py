@@ -115,13 +115,19 @@ def build_overview_from_cache() -> Dict[str, Any]:
 
     return {
         'indices': indices,
-        'watchlist': watchlist,
+        'watchlist': _attach_watchlist_signals(watchlist),
         'top_gainers': movers[:5],
         'top_losers': sorted(watchlist, key=lambda x: float(x.get('change_pct') or 0))[:5],
         'market_session': crypto_market_session(),
         'quote_source': 'Binance bookTicker (~200ms) · 24h stats from CoinGecko',
         'live_interval_ms': settings.live_broadcast_ms,
     }
+
+
+def _attach_watchlist_signals(watchlist: list) -> list:
+    from app.services.coin_screener import attach_signals
+
+    return attach_signals(watchlist)
 
 
 def _apply_book_ticker(data: Dict[str, Any]) -> bool:

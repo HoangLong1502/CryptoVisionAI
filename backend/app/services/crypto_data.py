@@ -158,8 +158,11 @@ async def sync_market_snapshot() -> Dict[str, Any]:
                 'quote_source': 'Demo data (CoinGecko rate limit) — reference prices only',
                 'as_of': datetime.now(timezone.utc).isoformat(),
             }
+            from app.services.coin_screener import attach_signals
+
+            overview['watchlist'] = attach_signals(overview['watchlist'])
             _cache['overview'] = overview
-            _cache['markets'] = {w['symbol']: w for w in watchlist}
+            _cache['markets'] = {w['symbol']: w for w in overview['watchlist']}
             _cache['ts'] = now
             return overview
         by_symbol = {str(r.get('symbol', '')).upper(): r for r in rows}
@@ -208,8 +211,11 @@ async def sync_market_snapshot() -> Dict[str, Any]:
             'quote_source': 'Prices from CoinGecko — crypto markets trade 24/7',
             'as_of': datetime.now(timezone.utc).isoformat(),
         }
+        from app.services.coin_screener import attach_signals
+
+        overview['watchlist'] = attach_signals(overview['watchlist'])
         _cache['overview'] = overview
-        _cache['markets'] = {w['symbol']: w for w in watchlist}
+        _cache['markets'] = {w['symbol']: w for w in overview['watchlist']}
         _cache['ts'] = now
         return overview
 

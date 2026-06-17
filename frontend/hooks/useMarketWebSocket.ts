@@ -29,7 +29,11 @@ function patchWatchlist(prev: DashboardData['watchlist'], incoming: DashboardDat
     const base = typeof item === 'string' ? { symbol: item, price: 0, change: 0 } : item;
     const newPrice = numPrice(upd.price ?? base.price);
     const oldPrice = numPrice(base.price);
-    if (Math.abs(newPrice - oldPrice) > 1e-12) changed = true;
+    const priceChanged = Math.abs(newPrice - oldPrice) > 1e-12;
+    const aiChanged =
+      upd.is_buy_pick !== (base as { is_buy_pick?: boolean }).is_buy_pick ||
+      upd.ai_verdict !== (base as { ai_verdict?: string }).ai_verdict;
+    if (priceChanged || aiChanged) changed = true;
     return { ...base, ...upd, price: newPrice, change_pct: upd.change_pct ?? upd.change ?? base.change_pct };
   });
   return changed ? next : prev;
