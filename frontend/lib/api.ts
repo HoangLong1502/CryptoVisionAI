@@ -179,3 +179,129 @@ function emptyDashboard() {
     quote_source: '',
   };
 }
+
+export type PaperHolding = {
+  symbol: string;
+  quantity: number;
+  avg_buy_price: number;
+  current_price: number;
+  cost_usd: number;
+  value_usd: number;
+  pnl_usd: number;
+  pnl_pct: number;
+  change_24h_pct: number;
+};
+
+export type PaperWalletSnapshot = {
+  mode: string;
+  cash_usd: number;
+  initial_balance_usd: number;
+  holdings_value_usd: number;
+  total_equity_usd: number;
+  total_pnl_usd: number;
+  total_pnl_pct: number;
+  holdings_pnl_usd: number;
+  holdings_pnl_pct: number;
+  holdings: PaperHolding[];
+  trade_count: number;
+};
+
+export type PaperTradeResponse = {
+  ok: boolean;
+  message: string;
+  trade?: { side: string; symbol: string; quantity: number; price: number; amount_usd: number };
+  wallet: PaperWalletSnapshot;
+};
+
+export async function getPaperWallet(): Promise<PaperWalletSnapshot> {
+  const res = await fetchWithTimeout(`${apiUrl}/paper/wallet`, 15_000);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<PaperWalletSnapshot>;
+}
+
+export async function paperBuy(symbol: string, amountUsd: number): Promise<PaperTradeResponse> {
+  const res = await fetchWithTimeout(`${apiUrl}/paper/buy`, 15_000, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol: symbol.trim().toUpperCase(), amount_usd: amountUsd }),
+  });
+  const data = (await res.json()) as PaperTradeResponse & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  return data;
+}
+
+export async function paperSell(
+  symbol: string,
+  opts: { quantity?: number; sellAll?: boolean },
+): Promise<PaperTradeResponse> {
+  const res = await fetchWithTimeout(`${apiUrl}/paper/sell`, 15_000, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      symbol: symbol.trim().toUpperCase(),
+      quantity: opts.quantity,
+      sell_all: opts.sellAll ?? false,
+    }),
+  });
+  const data = (await res.json()) as PaperTradeResponse & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  return data;
+}
+
+export async function paperReset(): Promise<PaperTradeResponse> {
+  const res = await fetchWithTimeout(`${apiUrl}/paper/reset`, 15_000, { method: 'POST' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<PaperTradeResponse>;
+}
+
+export type CoinSearchResult = {
+  symbol: string;
+  name: string;
+  coin_id: string;
+  market_cap_rank?: number | null;
+  already_listed?: boolean;
+};
+
+export type WatchlistAddResponse = {
+  ok: boolean;
+  symbol: string;
+  name: string;
+  coin_id: string;
+  binance_pair?: string | null;
+  has_live_price?: boolean;
+  is_custom?: boolean;
+  message: string;
+};
+
+export async function searchCoins(query: string): Promise<CoinSearchResult[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const res = await fetchWithTimeout(`${apiUrl}/watchlist/search?q=${encodeURIComponent(q)}`, 15_000);
+  if (!res.ok) return [];
+  const data = (await res.json()) as { results?: CoinSearchResult[] };
+  return data.results ?? [];
+}
+
+export async function addWatchlistCoin(opts: { symbol?: string; coinId?: string }): Promise<WatchlistAddResponse> {
+  const res = await fetchWithTimeout(`${apiUrl}/watchlist/add`, 20_000, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      symbol: opts.symbol?.trim().toUpperCase() || undefined,
+      coin_id: opts.coinId?.trim().toLowerCase() || undefined,
+    }),
+  });
+  const data = (await res.json()) as WatchlistAddResponse & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  return data;
+}
+
+export async function removeWatchlistCoin(symbol: string): Promise<{ ok: boolean; message: string }> {
+  const sym = symbol.trim().toUpperCase();
+  const res = await fetchWithTimeout(`${apiUrl}/watchlist/${encodeURIComponent(sym)}`, 15_000, {
+    method: 'DELETE',
+  });
+  const data = (await res.json()) as { ok?: boolean; message?: string; error?: string };
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  return { ok: true, message: data.message ?? `Removed ${sym}` };
+}

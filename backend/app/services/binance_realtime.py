@@ -10,7 +10,6 @@ import httpx
 from app.core.config import settings
 from app.services.crypto_data import (
     COIN_REGISTRY,
-    DEFAULT_WATCHLIST,
     GLOBAL_INDICES,
     _cache,
     _lock,
@@ -45,6 +44,35 @@ BINANCE_TO_SYMBOL = {v.upper(): k for k, v in SYMBOL_TO_BINANCE.items()}
 _live_prices: Dict[str, float] = {}
 _broadcast_debounce_task: Optional[asyncio.Task] = None
 _metadata_task: Optional[asyncio.Task] = None
+_stream_generation = 0
+_stream_refresh_event: Optional[asyncio.Event] = None
+
+
+def register_binance_pair(symbol: str, pair: str) -> None:
+    sym = symbol.strip().upper()
+    p = pair.strip().lower()
+    SYMBOL_TO_BINANCE[sym] = p
+    BINANCE_TO_SYMBOL[p.upper()] = sym
+
+
+def unregister_binance_pair(symbol: str) -> None:
+    sym = symbol.strip().upper()
+    pair = SYMBOL_TO_BINANCE.pop(sym, None)
+    if pair:
+        BINANCE_TO_SYMBOL.pop(pair.upper(), None)
+
+
+def request_stream_refresh() -> None:
+    global _stream_generation
+    _stream_generation += 1
+    if _stream_refresh_event is not None:
+        _stream_refresh_event.set()
+
+
+def _watchlist_symbols() -> list[str]:
+    from app.services.watchlist_store import get_effective_watchlist
+
+    return get_effective_watchlist()
 
 
 def get_live_price(symbol: str) -> Optional[float]:
@@ -53,17 +81,20 @@ def get_live_price(symbol: str) -> Optional[float]:
 
 def build_overview_from_cache() -> Dict[str, Any]:
     """Fast snapshot for WS push — merges Binance live prices into cached rows."""
+    from app.services.watchlist_store import is_custom_symbol
+
     base = _cache.get('overview')
     markets = dict(_cache.get('markets') or {})
     if not markets and base:
         markets = {w['symbol']: w for w in base.get('watchlist', [])}
 
     watchlist = []
-    for sym in DEFAULT_WATCHLIST:
+    for sym in _watchlist_symbols():
         row = dict(markets.get(sym) or {'symbol': sym, 'price': 0, 'change': 0, 'change_pct': 0})
         meta = COIN_REGISTRY.get(sym, {})
         row.setdefault('name', meta.get('name', sym))
         row.setdefault('symbol', sym)
+        row['is_custom'] = is_custom_symbol(sym)
         live = _live_prices.get(sym)
         if live and live > 0:
             row['price'] = live
@@ -136,7 +167,7 @@ async def _schedule_broadcast() -> None:
 
 async def _fetch_binance_24h() -> None:
     """Refresh 24h change % from Binance (single REST call)."""
-    symbols = [f'"{SYMBOL_TO_BINANCE[s].upper()}"' for s in DEFAULT_WATCHLIST if s in SYMBOL_TO_BINANCE]
+    symbols = [f'"{SYMBOL_TO_BINANCE[s].upper()}"' for s in _watchlist_symbols() if s in SYMBOL_TO_BINANCE]
     if not symbols:
         return
     url = f'{settings.binance_api_base}/api/v3/ticker/24hr'
@@ -191,16 +222,37 @@ async def _metadata_loop() -> None:
         await asyncio.sleep(settings.metadata_refresh_seconds)
 
 
+def _stream_url() -> str:
+    streams = '/'.join(
+        f'{SYMBOL_TO_BINANCE[s]}@bookTicker' for s in _watchlist_symbols() if s in SYMBOL_TO_BINANCE
+    )
+    return f'{settings.binance_ws_base}/stream?streams={streams}'
+
+
 async def _binance_ws_loop() -> None:
     import websockets
 
-    streams = '/'.join(f'{SYMBOL_TO_BINANCE[s]}@bookTicker' for s in DEFAULT_WATCHLIST if s in SYMBOL_TO_BINANCE)
-    url = f'{settings.binance_ws_base}/stream?streams={streams}'
+    global _stream_refresh_event
+    _stream_refresh_event = asyncio.Event()
 
     while True:
+        _stream_refresh_event.clear()
+        gen = _stream_generation
+        url = _stream_url()
+        if '/stream?streams=' not in url or url.endswith('streams='):
+            await asyncio.sleep(5)
+            continue
         try:
             async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
-                async for raw in ws:
+                while True:
+                    if _stream_generation != gen:
+                        break
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        if _stream_refresh_event.is_set() or _stream_generation != gen:
+                            break
+                        continue
                     msg = json.loads(raw)
                     data = msg.get('data') if isinstance(msg.get('data'), dict) else msg
                     if isinstance(data, dict) and _apply_book_ticker(data):
@@ -211,6 +263,9 @@ async def _binance_ws_loop() -> None:
 
 async def start_binance_realtime() -> None:
     global _metadata_task
+    from app.services.watchlist_store import bootstrap_custom_watchlist
+
+    bootstrap_custom_watchlist()
     try:
         await sync_market_snapshot()
     except Exception:

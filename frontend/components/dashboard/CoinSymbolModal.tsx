@@ -1,10 +1,11 @@
 'use client';
 
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Sparkles, TrendingDown, TrendingUp, X } from 'lucide-react';
 import { useState } from 'react';
-import { getAgentDebate, getCoinDetail, type DebateResponse } from '../../lib/api';
+import { getAgentDebate, getCoinDetail, getPaperWallet, type DebateResponse } from '../../lib/api';
 import AgentDebatePanel from '../agent/AgentDebatePanel';
+import { PaperBuyPanel } from './PaperWallet';
 import FlashPrice from '../ui/FlashPrice';
 
 function fmtUsd(v: number | null | undefined) {
@@ -30,15 +31,18 @@ export default function CoinSymbolModal({
   symbol,
   livePrice,
   onClose,
+  onPaperTrade,
 }: {
   readonly symbol: string;
   readonly livePrice?: number;
   readonly onClose: () => void;
+  readonly onPaperTrade?: () => void;
 }) {
   const [showAiForm, setShowAiForm] = useState(false);
   const [holdingsInput, setHoldingsInput] = useState('0');
   const [submittedHoldings, setSubmittedHoldings] = useState<number | null>(null);
   const [debateResult, setDebateResult] = useState<DebateResponse | null>(null);
+  const queryClient = useQueryClient();
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['coinDetail', symbol],
@@ -50,6 +54,13 @@ export default function CoinSymbolModal({
   const debateMutation = useMutation({
     mutationFn: (holdings: number) => getAgentDebate(symbol, holdings),
     onSuccess: (result) => setDebateResult(result),
+  });
+
+  const { data: paperWallet } = useQuery({
+    queryKey: ['paperWallet'],
+    queryFn: getPaperWallet,
+    staleTime: 5_000,
+    refetchOnWindowFocus: false,
   });
 
   const prices = data?.prices;
@@ -154,6 +165,16 @@ export default function CoinSymbolModal({
                   {data.circulating_supply?.toLocaleString('en-US') ?? '—'}
                 </p>
               ) : null}
+
+              <PaperBuyPanel
+                symbol={symbol}
+                livePrice={displayPrice}
+                cashUsd={paperWallet?.cash_usd}
+                onSuccess={() => {
+                  queryClient.invalidateQueries({ queryKey: ['paperWallet'] });
+                  onPaperTrade?.();
+                }}
+              />
 
               {!showAiForm ? (
                 <button

@@ -35,6 +35,12 @@ COIN_REGISTRY: Dict[str, Dict[str, str]] = {
 DEFAULT_WATCHLIST = list(COIN_REGISTRY.keys())
 GLOBAL_INDICES = ['BTC', 'ETH', 'BNB']
 
+
+def _active_watchlist() -> List[str]:
+    from app.services.watchlist_store import get_effective_watchlist
+
+    return get_effective_watchlist()
+
 DEMO_PRICES: Dict[str, Dict[str, float]] = {
     'BTC': {'price': 97000, 'change_pct': 1.2, 'volume_24h': 25e9, 'market_cap': 1.9e12},
     'ETH': {'price': 3800, 'change_pct': 0.8, 'volume_24h': 12e9, 'market_cap': 460e9},
@@ -46,7 +52,7 @@ DEMO_PRICES: Dict[str, Dict[str, float]] = {
 
 def _demo_watchlist_rows() -> List[Dict[str, Any]]:
     rows = []
-    for sym in DEFAULT_WATCHLIST:
+    for sym in _active_watchlist():
         demo = DEMO_PRICES.get(sym, {'price': 1.0, 'change_pct': 0, 'volume_24h': 1e6, 'market_cap': 1e8})
         meta = COIN_REGISTRY.get(sym, {})
         rows.append(_market_row_to_watchlist({
@@ -68,6 +74,11 @@ DETAIL_CACHE_SECONDS = 60
 HISTORY_CACHE_SECONDS = 300
 
 
+def bump_market_cache() -> None:
+    """Force next sync_market_snapshot to refetch."""
+    _cache['ts'] = 0.0
+
+
 def symbol_to_id(symbol: str) -> Optional[str]:
     meta = COIN_REGISTRY.get(symbol.strip().upper())
     return meta['id'] if meta else None
@@ -81,7 +92,8 @@ def id_to_symbol(coin_id: str) -> Optional[str]:
 
 
 async def _fetch_markets() -> List[Dict[str, Any]]:
-    ids = ','.join(m['id'] for m in COIN_REGISTRY.values())
+    symbols = _active_watchlist()
+    ids = ','.join(COIN_REGISTRY[s]['id'] for s in symbols if s in COIN_REGISTRY)
     url = f'{settings.coingecko_base}/coins/markets'
     params = {
         'vs_currency': 'usd',
@@ -152,10 +164,28 @@ async def sync_market_snapshot() -> Dict[str, Any]:
             return overview
         by_symbol = {str(r.get('symbol', '')).upper(): r for r in rows}
         watchlist = []
-        for sym in DEFAULT_WATCHLIST:
+        for sym in _active_watchlist():
             row = by_symbol.get(sym)
             if row:
-                watchlist.append(_market_row_to_watchlist(row))
+                item = _market_row_to_watchlist(row)
+            elif sym in COIN_REGISTRY:
+                item = _market_row_to_watchlist({
+                    'symbol': sym.lower(),
+                    'id': COIN_REGISTRY[sym]['id'],
+                    'name': COIN_REGISTRY[sym]['name'],
+                    'current_price': 0,
+                    'price_change_percentage_24h': 0,
+                    'total_volume': 0,
+                    'market_cap': 0,
+                    'high_24h': 0,
+                    'low_24h': 0,
+                })
+            else:
+                continue
+            from app.services.watchlist_store import is_custom_symbol
+
+            item['is_custom'] = is_custom_symbol(sym)
+            watchlist.append(item)
 
         movers = sorted(watchlist, key=lambda x: x['change_pct'], reverse=True)
         top_gainers = movers[:5]
