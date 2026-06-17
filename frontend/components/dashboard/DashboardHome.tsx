@@ -4,8 +4,11 @@ import { useCallback, useEffect, useState } from 'react';
 import { Loader2, Wifi, WifiOff } from 'lucide-react';
 import CoinWatchlist from './CoinWatchlist';
 import CoinSymbolModal from './CoinSymbolModal';
+import PaperWallet from './PaperWallet';
+import QuickBuyModal from './QuickBuyModal';
+import AddCoinModal from './AddCoinModal';
 import FlashPrice from '../ui/FlashPrice';
-import { apiUrl, WATCHLIST_FALLBACK_SYMBOLS } from '../../lib/api';
+import { apiUrl, removeWatchlistCoin, WATCHLIST_FALLBACK_SYMBOLS } from '../../lib/api';
 import { useMarketWebSocket } from '../../hooks/useMarketWebSocket';
 
 export type DashboardData = {
@@ -17,6 +20,7 @@ export type DashboardData = {
     change: number;
     change_pct?: number;
     volume_24h?: number;
+    is_custom?: boolean;
   }>;
   top_gainers: Array<{ symbol: string; change_pct?: number; change?: number }>;
   top_losers: Array<{ symbol: string; change_pct?: number; change?: number }>;
@@ -38,6 +42,10 @@ export default function DashboardHome() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailSymbol, setDetailSymbol] = useState<string | null>(null);
+  const [buySymbol, setBuySymbol] = useState<string | null>(null);
+  const [showAddCoin, setShowAddCoin] = useState(false);
+  const [removingSymbol, setRemovingSymbol] = useState<string | null>(null);
+  const [walletTick, setWalletTick] = useState(0);
   const { wsConnected } = useMarketWebSocket(data, setData);
 
   const fetchOverview = useCallback(async () => {
@@ -61,6 +69,19 @@ export default function DashboardHome() {
     const t = setInterval(fetchOverview, REFRESH_MS);
     return () => clearInterval(t);
   }, [fetchOverview]);
+
+  const handleRemoveCoin = async (symbol: string) => {
+    if (!globalThis.confirm(`Xóa ${symbol} khỏi danh sách?`)) return;
+    setRemovingSymbol(symbol);
+    try {
+      await removeWatchlistCoin(symbol);
+      await fetchOverview();
+    } catch {
+      // ignore
+    } finally {
+      setRemovingSymbol(null);
+    }
+  };
 
   const watchlist = (data?.watchlist ?? []).map((row) =>
     typeof row === 'string' ? { symbol: row, price: 0, change: 0 } : row,
@@ -90,6 +111,8 @@ export default function DashboardHome() {
         </div>
       </div>
 
+      <PaperWallet key={walletTick} onWalletChange={() => setWalletTick((n) => n + 1)} />
+
       {data?.indices && data.indices.length > 0 ? (
         <div className="mb-6 grid gap-3 sm:grid-cols-3">
           {data.indices.map((idx) => (
@@ -113,16 +136,42 @@ export default function DashboardHome() {
           Loading crypto market…
         </div>
       ) : (
-        <CoinWatchlist watchlist={watchlist} onDetail={setDetailSymbol} />
+        <CoinWatchlist
+          watchlist={watchlist}
+          onDetail={setDetailSymbol}
+          onBuy={setBuySymbol}
+          onAdd={() => setShowAddCoin(true)}
+          onRemove={handleRemoveCoin}
+          removingSymbol={removingSymbol}
+        />
       )}
 
       {data?.quote_source ? <p className="mt-4 text-center text-[10px] text-slate-600">{data.quote_source}</p> : null}
+
+      {showAddCoin ? (
+        <AddCoinModal
+          onClose={() => setShowAddCoin(false)}
+          onAdded={() => {
+            fetchOverview();
+          }}
+        />
+      ) : null}
+
+      {buySymbol ? (
+        <QuickBuyModal
+          symbol={buySymbol}
+          livePrice={watchlist.find((w) => w.symbol === buySymbol)?.price}
+          onClose={() => setBuySymbol(null)}
+          onSuccess={() => setWalletTick((n) => n + 1)}
+        />
+      ) : null}
 
       {detailSymbol ? (
         <CoinSymbolModal
           symbol={detailSymbol}
           livePrice={watchlist.find((w) => w.symbol === detailSymbol)?.price}
           onClose={() => setDetailSymbol(null)}
+          onPaperTrade={() => setWalletTick((n) => n + 1)}
         />
       ) : null}
     </main>

@@ -9,12 +9,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from app.services.crypto_data import (
-    DEFAULT_WATCHLIST,
     build_detail_from_market_row,
     get_coin_detail,
     get_historical_prices,
     sync_market_snapshot,
 )
+from app.services.watchlist_store import get_effective_watchlist
 from app.services.crypto_technical import calculate_all_indicators, full_historical_analysis
 
 AGENT_ROSTER = [
@@ -298,7 +298,8 @@ class CoinAgentOrchestrator:
         hist = await full_historical_analysis(sym, prices)
         if market_row:
             detail = build_detail_from_market_row(sym, market_row)
-            detail['rank'] = DEFAULT_WATCHLIST.index(sym) + 1 if sym in DEFAULT_WATCHLIST else 0
+            wl = get_effective_watchlist()
+            detail['rank'] = wl.index(sym) + 1 if sym in wl else 0
         else:
             detail = await get_coin_detail(sym)
         indicators = await calculate_all_indicators(prices) if prices else {}

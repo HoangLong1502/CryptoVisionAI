@@ -1,0 +1,10 @@
+{
+  "coins": [
+    {
+      "symbol": "PEPE",
+      "id": "pepe",
+      "name": "Pepe",
+      "binance_pair": "pepeusdt"
+    }
+  ]
+}

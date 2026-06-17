@@ -11,8 +11,10 @@ from pydantic import BaseModel, Field
 from app.core.config import settings
 from app.services.coin_agent_orchestrator import orchestrator
 from app.services.coin_user_brief import build_coin_user_brief
-from app.services.crypto_data import DEFAULT_WATCHLIST, get_coin_detail, get_historical_prices, sync_market_snapshot
+from app.services.crypto_data import get_coin_detail, get_historical_prices, sync_market_snapshot
 from app.services.crypto_technical import full_historical_analysis
+from app.services.paper_trading import buy_coin, get_wallet_snapshot, reset_wallet, sell_coin
+from app.services.watchlist_store import add_coin, get_effective_watchlist, list_custom_coins, remove_coin, search_coins
 
 router = APIRouter()
 
@@ -23,8 +25,79 @@ class DebateRequest(BaseModel):
     holdings: float = Field(default=0.0, ge=0, description='Amount of coin the user holds (may be 0)')
 
 
+class PaperBuyRequest(BaseModel):
+    symbol: str
+    amount_usd: float = Field(gt=0, description='USD amount to spend')
+
+
+class PaperSellRequest(BaseModel):
+    symbol: str
+    quantity: Optional[float] = Field(default=None, gt=0)
+    sell_all: bool = False
+
+
+class WatchlistAddRequest(BaseModel):
+    symbol: Optional[str] = None
+    coin_id: Optional[str] = None
+
+
 def _debate_cache_key(symbol: str, holdings: float) -> str:
     return f'{symbol.upper()}:{holdings:.8f}'
+
+
+@router.get('/paper/wallet')
+async def paper_wallet():
+    return JSONResponse(get_wallet_snapshot())
+
+
+@router.post('/paper/buy')
+async def paper_buy(body: PaperBuyRequest):
+    try:
+        return JSONResponse(buy_coin(body.symbol, body.amount_usd))
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+
+
+@router.post('/paper/sell')
+async def paper_sell(body: PaperSellRequest):
+    try:
+        return JSONResponse(sell_coin(body.symbol, quantity=body.quantity, sell_all=body.sell_all))
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+
+
+@router.post('/paper/reset')
+async def paper_reset():
+    return JSONResponse(reset_wallet())
+
+
+@router.get('/watchlist/search')
+async def watchlist_search(q: str = Query('', min_length=1)):
+    results = await search_coins(q)
+    return JSONResponse({'query': q, 'results': results})
+
+
+@router.get('/watchlist/custom')
+async def watchlist_custom():
+    return JSONResponse({'coins': list_custom_coins(), 'symbols': get_effective_watchlist()})
+
+
+@router.post('/watchlist/add')
+async def watchlist_add(body: WatchlistAddRequest):
+    try:
+        result = await add_coin(symbol=body.symbol, coin_id=body.coin_id)
+        return JSONResponse(result)
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+
+
+@router.delete('/watchlist/{symbol}')
+async def watchlist_remove(symbol: str):
+    try:
+        result = await remove_coin(symbol)
+        return JSONResponse(result)
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
 
 
 @router.get('/market/overview')
@@ -36,7 +109,7 @@ async def market_overview():
         return JSONResponse(
             {
                 'indices': [],
-                'watchlist': [{'symbol': s, 'price': 0, 'change': 0} for s in DEFAULT_WATCHLIST],
+                'watchlist': [{'symbol': s, 'price': 0, 'change': 0} for s in get_effective_watchlist()],
                 'top_gainers': [],
                 'top_losers': [],
                 'error': str(e),
