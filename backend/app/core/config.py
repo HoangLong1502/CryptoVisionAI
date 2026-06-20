@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     custom_watchlist_path: str = 'data/custom_watchlist.json'
     screener_refresh_seconds: int = 600
     screener_cache_seconds: int = 600
+    auto_trading_state_path: str = 'data/auto_trading.json'
+    auto_trade_interval_ms: int = 200
+    auto_trade_buy_usd: float = 100.0
+    auto_trade_max_positions: int = 5
+    auto_trade_max_cash_pct: float = 0.15
+    auto_trade_cooldown_seconds: int = 300
 
     class Config:
         env_file = '.env'

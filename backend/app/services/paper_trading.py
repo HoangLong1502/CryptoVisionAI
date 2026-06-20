@@ -122,7 +122,21 @@ def get_wallet_snapshot() -> Dict[str, Any]:
         }
 
 
-def buy_coin(symbol: str, amount_usd: float) -> Dict[str, Any]:
+def get_holding_quantity(symbol: str) -> float:
+    sym = symbol.strip().upper()
+    with _lock:
+        wallet = _load_wallet()
+        pos = (wallet.get('holdings') or {}).get(sym) or {}
+        return float(pos.get('quantity') or 0)
+
+
+def buy_coin(
+    symbol: str,
+    amount_usd: float,
+    *,
+    source: str = 'manual',
+    reason: str = '',
+) -> Dict[str, Any]:
     sym = symbol.strip().upper()
     amount = float(amount_usd)
     if amount <= 0:
@@ -156,6 +170,8 @@ def buy_coin(symbol: str, amount_usd: float) -> Dict[str, Any]:
             'quantity': round(qty, 8),
             'price': round(price, 8),
             'amount_usd': round(amount, 2),
+            'source': source,
+            'reason': reason,
         })
         _save_wallet(wallet)
 
@@ -168,7 +184,14 @@ def buy_coin(symbol: str, amount_usd: float) -> Dict[str, Any]:
     }
 
 
-def sell_coin(symbol: str, quantity: Optional[float] = None, sell_all: bool = False) -> Dict[str, Any]:
+def sell_coin(
+    symbol: str,
+    quantity: Optional[float] = None,
+    sell_all: bool = False,
+    *,
+    source: str = 'manual',
+    reason: str = '',
+) -> Dict[str, Any]:
     sym = symbol.strip().upper()
     price = _current_price(sym)
     if not price:
@@ -208,6 +231,8 @@ def sell_coin(symbol: str, quantity: Optional[float] = None, sell_all: bool = Fa
             'quantity': round(qty, 8),
             'price': round(price, 8),
             'amount_usd': round(proceeds, 2),
+            'source': source,
+            'reason': reason,
         })
         _save_wallet(wallet)
 

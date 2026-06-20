@@ -15,6 +15,9 @@ from app.services.crypto_data import get_coin_detail, get_historical_prices, syn
 from app.services.crypto_technical import full_historical_analysis
 from app.services.paper_trading import buy_coin, get_wallet_snapshot, reset_wallet, sell_coin
 from app.services.coin_screener import get_all_signals, request_signal_refresh
+from app.services.auto_trading import get_status as get_auto_trading_status
+from app.services.auto_trading import run_cycle as run_auto_trading_cycle
+from app.services.auto_trading import set_enabled as set_auto_trading_enabled
 from app.services.watchlist_store import add_coin, get_effective_watchlist, list_custom_coins, remove_coin, search_coins
 
 router = APIRouter()
@@ -70,6 +73,40 @@ async def paper_sell(body: PaperSellRequest):
 @router.post('/paper/reset')
 async def paper_reset():
     return JSONResponse(reset_wallet())
+
+
+@router.get('/paper/auto-trading')
+async def auto_trading_status():
+    return JSONResponse(get_auto_trading_status())
+
+
+@router.post('/paper/auto-trading/start')
+async def auto_trading_start():
+    status = set_auto_trading_enabled(True)
+    result = await run_auto_trading_cycle()
+    return JSONResponse({**status, 'cycle': result})
+
+
+@router.post('/paper/auto-trading/stop')
+async def auto_trading_stop():
+    return JSONResponse(set_auto_trading_enabled(False))
+
+
+@router.post('/paper/auto-trading/toggle')
+async def auto_trading_toggle():
+    current = get_auto_trading_status()
+    new_state = not current.get('enabled', False)
+    status = set_auto_trading_enabled(new_state)
+    cycle = None
+    if new_state:
+        cycle = await run_auto_trading_cycle()
+    return JSONResponse({**status, 'cycle': cycle})
+
+
+@router.post('/paper/auto-trading/run')
+async def auto_trading_run_once():
+    result = await run_auto_trading_cycle(force=True)
+    return JSONResponse({**get_auto_trading_status(), 'cycle': result})
 
 
 @router.get('/watchlist/search')

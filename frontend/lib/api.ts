@@ -254,6 +254,46 @@ export async function paperReset(): Promise<PaperTradeResponse> {
   return res.json() as Promise<PaperTradeResponse>;
 }
 
+export type AutoTradingAction = {
+  at?: string;
+  side: 'buy' | 'sell' | string;
+  symbol: string;
+  amount_usd?: number;
+  message?: string;
+  ai_verdict?: string;
+  ai_confidence?: number;
+  skipped?: boolean;
+  error?: string;
+};
+
+export type AutoTradingStatus = {
+  enabled: boolean;
+  last_run_at?: string | null;
+  last_error?: string | null;
+  recent_actions: AutoTradingAction[];
+  stats: { total_buys?: number; total_sells?: number; cycles?: number };
+  settings: {
+    interval_ms: number;
+    interval_seconds: number;
+    buy_usd: number;
+    max_positions: number;
+    max_cash_pct: number;
+    cooldown_seconds: number;
+  };
+};
+
+export async function getAutoTradingStatus(): Promise<AutoTradingStatus> {
+  const res = await fetchWithTimeout(`${apiUrl}/paper/auto-trading`, 15_000);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<AutoTradingStatus>;
+}
+
+export async function toggleAutoTrading(): Promise<AutoTradingStatus & { cycle?: unknown }> {
+  const res = await fetchWithTimeout(`${apiUrl}/paper/auto-trading/toggle`, 120_000, { method: 'POST' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<AutoTradingStatus & { cycle?: unknown }>;
+}
+
 export type CoinSearchResult = {
   symbol: string;
   name: string;

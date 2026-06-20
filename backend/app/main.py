@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from app.api.v1.routes import router as api_router
 from app.services.binance_realtime import start_binance_realtime
 from app.services.coin_screener import start_screener
+from app.services.auto_trading import start_auto_trading_service
 from app.services.market_ws import register as ws_register, unregister as ws_unregister
 
 app = FastAPI(title='Bot Coin AI Platform')
@@ -25,6 +26,7 @@ app.include_router(api_router, prefix='/api/v1')
 async def startup_event():
     asyncio.create_task(start_binance_realtime())
     start_screener()
+    start_auto_trading_service()
 
 
 @app.get('/')

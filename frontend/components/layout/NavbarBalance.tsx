@@ -17,8 +17,8 @@ export default function NavbarBalance() {
   const { data, isLoading } = useQuery({
     queryKey: ['paperWallet'],
     queryFn: getPaperWallet,
-    refetchInterval: 3_000,
-    staleTime: 2_000,
+    refetchInterval: 200,
+    staleTime: 150,
   });
 
   const equity = data?.total_equity_usd ?? 0;
