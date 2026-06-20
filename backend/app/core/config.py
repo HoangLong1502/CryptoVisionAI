@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     paper_trading_initial_balance: float = 10_000.0
     paper_wallet_path: str = 'data/paper_wallet.json'
     custom_watchlist_path: str = 'data/custom_watchlist.json'
+    screener_refresh_seconds: int = 600
+    screener_cache_seconds: int = 600
 
     class Config:
         env_file = '.env'

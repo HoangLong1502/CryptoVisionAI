@@ -14,6 +14,7 @@ from app.services.coin_user_brief import build_coin_user_brief
 from app.services.crypto_data import get_coin_detail, get_historical_prices, sync_market_snapshot
 from app.services.crypto_technical import full_historical_analysis
 from app.services.paper_trading import buy_coin, get_wallet_snapshot, reset_wallet, sell_coin
+from app.services.coin_screener import get_all_signals, request_signal_refresh
 from app.services.watchlist_store import add_coin, get_effective_watchlist, list_custom_coins, remove_coin, search_coins
 
 router = APIRouter()
@@ -98,6 +99,17 @@ async def watchlist_remove(symbol: str):
         return JSONResponse(result)
     except ValueError as e:
         return JSONResponse({'error': str(e)}, status_code=400)
+
+
+@router.get('/market/signals')
+async def market_signals():
+    return JSONResponse({'signals': get_all_signals()})
+
+
+@router.post('/market/signals/refresh')
+async def market_signals_refresh():
+    asyncio.create_task(request_signal_refresh())
+    return JSONResponse({'ok': True, 'message': 'AI screening started'})
 
 
 @router.get('/market/overview')
