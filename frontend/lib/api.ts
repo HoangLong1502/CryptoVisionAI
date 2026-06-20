@@ -294,6 +294,35 @@ export async function toggleAutoTrading(): Promise<AutoTradingStatus & { cycle?:
   return res.json() as Promise<AutoTradingStatus & { cycle?: unknown }>;
 }
 
+export type PnlPoint = {
+  at: string;
+  label: string;
+  pnl_usd: number;
+  pnl_pct: number;
+};
+
+export type PerformanceChartData = {
+  days: number;
+  retention_days: number;
+  point_count: number;
+  auto: PnlPoint[];
+  manual: PnlPoint[];
+  total: PnlPoint[];
+  latest?: Record<string, number | string> | null;
+};
+
+export async function getPerformanceWeek(): Promise<PerformanceChartData> {
+  const res = await fetchWithTimeout(`${apiUrl}/paper/performance/week`, 15_000);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<PerformanceChartData>;
+}
+
+export async function getPerformanceMonth(): Promise<PerformanceChartData> {
+  const res = await fetchWithTimeout(`${apiUrl}/paper/performance/month`, 15_000);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<PerformanceChartData>;
+}
+
 export type CoinSearchResult = {
   symbol: string;
   name: string;

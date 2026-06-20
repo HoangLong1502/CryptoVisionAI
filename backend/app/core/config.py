@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     auto_trade_max_positions: int = 5
     auto_trade_max_cash_pct: float = 0.15
     auto_trade_cooldown_seconds: int = 300
+    performance_history_path: str = 'data/performance_history.json'
+    performance_snapshot_min_seconds: int = 3600
 
     class Config:
         env_file = '.env'

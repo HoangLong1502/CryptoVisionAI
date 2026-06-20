@@ -1,6 +1,6 @@
 {
   "enabled": true,
-  "last_run_at": "2026-06-20T08:36:13.170155+00:00",
+  "last_run_at": "2026-06-20T08:44:59.567138+00:00",
   "last_error": null,
   "cooldowns": {
     "BTC": 1454.032739266,
@@ -59,6 +59,6 @@
   "stats": {
     "total_buys": 5,
     "total_sells": 0,
-    "cycles": 595
+    "cycles": 2216
   }
 }

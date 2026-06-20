@@ -14,7 +14,12 @@ export default function AppNavbar() {
             Bot Coin <span className="text-amber-400">AI</span>
           </span>
         </Link>
-        <p className="hidden flex-1 text-center text-xs text-slate-500 lg:block">Crypto research desk · Live · AI Debate</p>
+        <div className="hidden items-center gap-4 sm:flex">
+          <Link href="/performance" className="text-xs font-medium text-slate-400 hover:text-amber-300">
+            Performance
+          </Link>
+          <p className="text-xs text-slate-500">Crypto research desk · Live · AI Debate</p>
+        </div>
         <NavbarBalance />
       </div>
     </header>

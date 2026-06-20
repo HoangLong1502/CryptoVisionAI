@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -20,7 +21,40 @@ def _default_wallet() -> Dict[str, Any]:
         'initial_balance_usd': float(settings.paper_trading_initial_balance),
         'holdings': {},
         'trades': [],
+        'realized_pnl': {'auto': 0.0, 'manual': 0.0},
+        '_lots_migrated': True,
     }
+
+
+def _sync_position_from_lots(pos: Dict[str, Any]) -> None:
+    lots = pos.get('lots') or []
+    qty = sum(float(lot.get('quantity') or 0) for lot in lots)
+    if qty <= 0:
+        pos['quantity'] = 0.0
+        pos['avg_buy_price'] = 0.0
+        return
+    cost = sum(float(lot.get('quantity') or 0) * float(lot.get('avg_buy_price') or 0) for lot in lots)
+    pos['quantity'] = qty
+    pos['avg_buy_price'] = cost / qty if qty > 0 else 0.0
+
+
+def _ensure_lots(wallet: Dict[str, Any]) -> None:
+    if wallet.get('_lots_migrated'):
+        return
+    wallet.setdefault('realized_pnl', {'auto': 0.0, 'manual': 0.0})
+    for pos in (wallet.get('holdings') or {}).values():
+        if not pos.get('lots'):
+            qty = float(pos.get('quantity') or 0)
+            if qty > 0:
+                pos['lots'] = [{
+                    'quantity': qty,
+                    'avg_buy_price': float(pos.get('avg_buy_price') or 0),
+                    'source': 'manual',
+                }]
+        _sync_position_from_lots(pos)
+    for trade in wallet.get('trades') or []:
+        trade.setdefault('source', 'manual')
+    wallet['_lots_migrated'] = True
 
 
 def _load_wallet() -> Dict[str, Any]:
@@ -31,6 +65,8 @@ def _load_wallet() -> Dict[str, Any]:
                 data.setdefault('initial_balance_usd', settings.paper_trading_initial_balance)
                 data.setdefault('holdings', {})
                 data.setdefault('trades', [])
+                data.setdefault('realized_pnl', {'auto': 0.0, 'manual': 0.0})
+                _ensure_lots(data)
                 return data
         except (json.JSONDecodeError, OSError, TypeError):
             pass
@@ -75,6 +111,97 @@ def _holding_row(symbol: str, qty: float, avg_price: float, price: float) -> Dic
         'pnl_pct': round(pnl_pct, 2),
         'change_24h_pct': round(_change_24h_pct(symbol), 2),
     }
+
+
+def compute_performance_breakdown() -> Dict[str, Any]:
+    with _lock:
+        wallet = _load_wallet()
+        initial = float(wallet.get('initial_balance_usd') or settings.paper_trading_initial_balance)
+        half = initial / 2.0
+        auto_unreal = manual_unreal = 0.0
+
+        for sym, pos in (wallet.get('holdings') or {}).items():
+            price = _current_price(sym)
+            if not price:
+                price = float(pos.get('avg_buy_price') or 0)
+            for lot in pos.get('lots') or []:
+                q = float(lot.get('quantity') or 0)
+                if q <= 0:
+                    continue
+                cost = q * float(lot.get('avg_buy_price') or 0)
+                val = q * price
+                unreal = val - cost
+                if lot.get('source') == 'auto':
+                    auto_unreal += unreal
+                else:
+                    manual_unreal += unreal
+
+        realized = wallet.get('realized_pnl') or {}
+        auto_realized = float(realized.get('auto') or 0)
+        manual_realized = float(realized.get('manual') or 0)
+        auto_pnl = auto_realized + auto_unreal
+        manual_pnl = manual_realized + manual_unreal
+        total_pnl = auto_pnl + manual_pnl
+
+    snap = get_wallet_snapshot()
+    return {
+        'total_pnl_usd': round(total_pnl, 2),
+        'total_pnl_pct': round((total_pnl / initial * 100) if initial > 0 else 0.0, 2),
+        'auto_pnl_usd': round(auto_pnl, 2),
+        'auto_pnl_pct': round((auto_pnl / half * 100) if half > 0 else 0.0, 2),
+        'manual_pnl_usd': round(manual_pnl, 2),
+        'manual_pnl_pct': round((manual_pnl / half * 100) if half > 0 else 0.0, 2),
+        'total_equity': snap['total_equity_usd'],
+        'auto_equity': round(half + auto_pnl, 2),
+        'manual_equity': round(half + manual_pnl, 2),
+    }
+
+
+def _record_trade_snapshot() -> None:
+    try:
+        from app.services.performance_history import record_snapshot
+
+        record_snapshot(force=True)
+    except Exception:
+        pass
+
+
+def _apply_sell_lots(
+    wallet: Dict[str, Any],
+    sym: str,
+    pos: Dict[str, Any],
+    qty: float,
+    price: float,
+) -> None:
+    remaining = qty
+    new_lots: List[Dict[str, Any]] = []
+    realized = wallet.setdefault('realized_pnl', {'auto': 0.0, 'manual': 0.0})
+
+    for lot in pos.get('lots') or []:
+        if remaining <= 1e-12:
+            new_lots.append(lot)
+            continue
+        lot_qty = float(lot.get('quantity') or 0)
+        if lot_qty <= 0:
+            continue
+        take = min(lot_qty, remaining)
+        avg = float(lot.get('avg_buy_price') or 0)
+        pnl = take * (price - avg)
+        src = lot.get('source') or 'manual'
+        realized[src] = float(realized.get(src) or 0) + pnl
+        remaining -= take
+        left = lot_qty - take
+        if left > 1e-10:
+            new_lots.append({
+                'quantity': left,
+                'avg_buy_price': avg,
+                'source': src,
+            })
+
+    pos['lots'] = new_lots
+    _sync_position_from_lots(pos)
+    if float(pos.get('quantity') or 0) <= 1e-10:
+        wallet.get('holdings', {}).pop(sym, None)
 
 
 def get_wallet_snapshot() -> Dict[str, Any]:
@@ -155,14 +282,15 @@ def buy_coin(
             raise ValueError(f'Insufficient cash: ${cash:.2f} available')
 
         qty = amount / price
-        holdings: Dict[str, Dict[str, float]] = wallet.setdefault('holdings', {})
-        pos = holdings.get(sym) or {'quantity': 0.0, 'avg_buy_price': 0.0}
-        old_qty = float(pos.get('quantity') or 0)
-        old_avg = float(pos.get('avg_buy_price') or 0)
-        new_qty = old_qty + qty
-        new_avg = ((old_qty * old_avg) + amount) / new_qty if new_qty > 0 else price
-
-        holdings[sym] = {'quantity': new_qty, 'avg_buy_price': new_avg}
+        holdings: Dict[str, Dict[str, Any]] = wallet.setdefault('holdings', {})
+        pos = holdings.get(sym) or {'quantity': 0.0, 'avg_buy_price': 0.0, 'lots': []}
+        pos.setdefault('lots', []).append({
+            'quantity': qty,
+            'avg_buy_price': price,
+            'source': source,
+        })
+        _sync_position_from_lots(pos)
+        holdings[sym] = pos
         wallet['cash_usd'] = cash - amount
         wallet.setdefault('trades', []).append({
             'side': 'buy',
@@ -175,6 +303,7 @@ def buy_coin(
         })
         _save_wallet(wallet)
 
+    _record_trade_snapshot()
     snap = get_wallet_snapshot()
     return {
         'ok': True,
@@ -215,15 +344,7 @@ def sell_coin(
             raise ValueError(f'Cannot sell {qty} {sym}; you only hold {held}')
 
         proceeds = qty * price
-        remaining = held - qty
-        if remaining <= 1e-10:
-            holdings.pop(sym, None)
-        else:
-            holdings[sym] = {
-                'quantity': remaining,
-                'avg_buy_price': float(pos.get('avg_buy_price') or 0),
-            }
-
+        _apply_sell_lots(wallet, sym, pos, qty, price)
         wallet['cash_usd'] = float(wallet.get('cash_usd') or 0) + proceeds
         wallet.setdefault('trades', []).append({
             'side': 'sell',
@@ -236,6 +357,7 @@ def sell_coin(
         })
         _save_wallet(wallet)
 
+    _record_trade_snapshot()
     snap = get_wallet_snapshot()
     return {
         'ok': True,
@@ -249,4 +371,10 @@ def reset_wallet() -> Dict[str, Any]:
     with _lock:
         wallet = _default_wallet()
         _save_wallet(wallet)
+    try:
+        from app.services.performance_history import record_snapshot
+
+        record_snapshot(force=True)
+    except Exception:
+        pass
     return {'ok': True, 'message': 'Paper wallet reset', 'wallet': get_wallet_snapshot()}
