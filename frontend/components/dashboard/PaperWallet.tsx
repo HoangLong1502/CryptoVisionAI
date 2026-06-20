@@ -2,19 +2,22 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Loader2, RefreshCw, RotateCcw, TrendingDown, TrendingUp, Wallet } from 'lucide-react';
+import { Bot, Loader2, RefreshCw, RotateCcw, TrendingDown, TrendingUp, Wallet } from 'lucide-react';
 import {
+  getAutoTradingStatus,
   getPaperWallet,
   paperBuy,
   paperReset,
   paperSell,
+  toggleAutoTrading,
+  type AutoTradingStatus,
   type PaperHolding,
   type PaperWalletSnapshot,
 } from '../../lib/api';
 
 export type { PaperWalletSnapshot };
 
-const REFRESH_MS = 3_000;
+const REFRESH_MS = 200;
 
 function fmtUsd(v: number) {
   return `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -82,15 +85,18 @@ function HoldingRow({
 export default function PaperWallet({ onWalletChange }: { readonly onWalletChange?: () => void }) {
   const queryClient = useQueryClient();
   const [wallet, setWallet] = useState<PaperWalletSnapshot | null>(null);
+  const [autoTrading, setAutoTrading] = useState<AutoTradingStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selling, setSelling] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
+  const [togglingAuto, setTogglingAuto] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      const data = await getPaperWallet();
+      const [data, auto] = await Promise.all([getPaperWallet(), getAutoTradingStatus()]);
       setWallet(data);
+      setAutoTrading(auto);
       setError(null);
     } catch {
       setError('Không tải được ví ảo');
@@ -117,6 +123,23 @@ export default function PaperWallet({ onWalletChange }: { readonly onWalletChang
       setError(e instanceof Error ? e.message : 'Bán thất bại');
     } finally {
       setSelling(null);
+    }
+  };
+
+  const handleToggleAuto = async () => {
+    setTogglingAuto(true);
+    setError(null);
+    try {
+      const res = await toggleAutoTrading();
+      setAutoTrading(res);
+      const walletData = await getPaperWallet();
+      setWallet(walletData);
+      queryClient.invalidateQueries({ queryKey: ['paperWallet'] });
+      onWalletChange?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Auto-trading thất bại');
+    } finally {
+      setTogglingAuto(false);
     }
   };
 
@@ -147,6 +170,7 @@ export default function PaperWallet({ onWalletChange }: { readonly onWalletChang
 
   const w = wallet!;
   const totalUp = w.total_pnl_pct >= 0;
+  const autoOn = autoTrading?.enabled === true;
 
   return (
     <section className="section-card mb-6">
@@ -160,7 +184,24 @@ export default function PaperWallet({ onWalletChange }: { readonly onWalletChang
             <p className="text-xs text-slate-500">$10,000 USDT ban đầu · giá live từ Binance</p>
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleToggleAuto}
+            disabled={togglingAuto}
+            className={`flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition disabled:opacity-60 ${
+              autoOn
+                ? 'border border-emerald-400/50 bg-emerald-600 text-white shadow-lg shadow-emerald-900/40 ring-2 ring-emerald-400/30'
+                : 'border border-white/10 bg-slate-800 text-slate-300 hover:bg-slate-700'
+            }`}
+          >
+            {togglingAuto ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Bot className={`h-4 w-4 ${autoOn ? 'animate-pulse' : ''}`} />
+            )}
+            {autoOn ? 'Auto Trading ON' : 'Auto Trading'}
+          </button>
           <button
             type="button"
             onClick={() => refresh()}
@@ -180,6 +221,55 @@ export default function PaperWallet({ onWalletChange }: { readonly onWalletChang
           </button>
         </div>
       </div>
+
+      {autoOn && autoTrading ? (
+        <div className="mb-4 rounded-xl border border-emerald-500/25 bg-emerald-950/25 px-4 py-3 text-xs text-emerald-100">
+          <p className="font-semibold text-emerald-300">
+            Bot đang chạy — tự mua/bán theo AI committee
+          </p>
+          <p className="mt-1 text-slate-400">
+            ${autoTrading.settings.buy_usd}/lệnh · tối đa {autoTrading.settings.max_positions} vị thế · chu kỳ{' '}
+            {autoTrading.settings.interval_ms ?? 200}ms
+            {autoTrading.stats?.total_buys || autoTrading.stats?.total_sells ? (
+              <>
+                {' '}
+                · đã mua {autoTrading.stats.total_buys ?? 0} · đã bán {autoTrading.stats.total_sells ?? 0}
+              </>
+            ) : null}
+          </p>
+          {autoTrading.last_error ? (
+            <p className="mt-1 text-rose-400">Lỗi gần nhất: {autoTrading.last_error}</p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {autoTrading && autoTrading.recent_actions.length > 0 ? (
+        <div className="mb-4 rounded-xl border border-white/5 bg-black/20 px-4 py-3">
+          <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+            Lệnh auto gần đây
+          </p>
+          <ul className="space-y-1.5">
+            {autoTrading.recent_actions.slice(0, 5).map((act, i) => (
+              <li key={`${act.at}-${act.symbol}-${i}`} className="flex flex-wrap items-center gap-2 text-xs">
+                <span
+                  className={`rounded px-1.5 py-0.5 font-mono font-bold uppercase ${
+                    act.side === 'buy' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
+                  }`}
+                >
+                  {act.side}
+                </span>
+                <span className="font-mono font-semibold text-white">{act.symbol}</span>
+                {act.amount_usd != null ? (
+                  <span className="font-mono text-slate-400">${act.amount_usd.toFixed(2)}</span>
+                ) : null}
+                {act.ai_confidence != null ? (
+                  <span className="text-slate-600">{act.ai_confidence}% AI</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {error ? <p className="mb-3 rounded-lg bg-rose-950/40 px-3 py-2 text-xs text-rose-300">{error}</p> : null}
 

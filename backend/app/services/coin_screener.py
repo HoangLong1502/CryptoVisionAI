@@ -27,12 +27,12 @@ def _is_fresh(symbol: str) -> bool:
     return time.monotonic() - ts < settings.screener_cache_seconds
 
 
-async def screen_symbol(symbol: str) -> Dict[str, Any]:
+async def screen_symbol(symbol: str, holdings: float = 0.0) -> Dict[str, Any]:
     from app.services.coin_agent_orchestrator import orchestrator
 
     sym = symbol.strip().upper()
     try:
-        result = await orchestrator.run_coin_pipeline(sym, user_holdings=0.0)
+        result = await orchestrator.run_coin_pipeline(sym, user_holdings=max(0.0, float(holdings)))
         decision = result.get('decision') or {}
         verdict = str(decision.get('verdict', 'hold'))
         score = float(decision.get('score', 0))
