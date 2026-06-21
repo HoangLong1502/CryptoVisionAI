@@ -1,2 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Runtime data
 backend/data/*.json
+
+# Frontend build / deps
 frontend/.next/
+frontend/node_modules/
+frontend/tsconfig.tsbuildinfo

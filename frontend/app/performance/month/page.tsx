@@ -3,13 +3,14 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { ArrowLeft, Loader2 } from 'lucide-react';
-import PnlLineChart from '../../components/performance/PnlLineChart';
-import { getPerformanceMonth, type PerformanceChartData } from '../../lib/api';
+import PerformanceChart, { ChartModeSwitcher, type ChartMode } from '../../../components/performance/PerformanceChart';
+import { getPerformanceMonth, type PerformanceChartData } from '../../../lib/api';
 
 export default function PerformanceMonthPage() {
   const [data, setData] = useState<PerformanceChartData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [chartMode, setChartMode] = useState<ChartMode>('line');
 
   useEffect(() => {
     getPerformanceMonth()
@@ -24,18 +25,19 @@ export default function PerformanceMonthPage() {
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-6">
-      <div className="mb-6">
-        <Link
-          href="/performance"
-          className="mb-2 inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300"
-        >
-          <ArrowLeft className="h-3 w-3" />
-          Biểu đồ 1 tuần
-        </Link>
-        <h1 className="text-2xl font-bold text-white">Hiệu suất 1 tháng</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          4 tuần dữ liệu lưu trữ · Auto · Manual · Tổng
-        </p>
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <Link
+            href="/performance"
+            className="mb-2 inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300"
+          >
+            <ArrowLeft className="h-3 w-3" />
+            Biểu đồ 1 tuần
+          </Link>
+          <h1 className="text-2xl font-bold text-white">Hiệu suất 1 tháng</h1>
+          <p className="mt-1 text-sm text-slate-400">4 tuần · trục Y · đường / nến / tròn</p>
+        </div>
+        <ChartModeSwitcher mode={chartMode} onChange={setChartMode} />
       </div>
 
       {loading ? (
@@ -48,30 +50,33 @@ export default function PerformanceMonthPage() {
       ) : (
         <>
           <div className="grid gap-4 lg:grid-cols-3">
-            <PnlLineChart
-              title="Auto Trading · 28 ngày"
+            <PerformanceChart
+              title="Auto · 28 ngày"
               subtitle="4 tuần lưu record"
               data={data.auto}
               accent="emerald"
+              mode={chartMode}
               height={260}
             />
-            <PnlLineChart
-              title="Manual Trading · 28 ngày"
+            <PerformanceChart
+              title="Manual · 28 ngày"
               subtitle="4 tuần lưu record"
               data={data.manual}
               accent="violet"
+              mode={chartMode}
               height={260}
             />
-            <PnlLineChart
+            <PerformanceChart
               title="Tổng · 28 ngày"
               subtitle="Auto + Manual"
               data={data.total}
               accent="amber"
+              mode={chartMode}
               height={260}
             />
           </div>
           <p className="mt-4 text-center text-[10px] text-slate-600">
-            Retention {data.retention_days} ngày · {data.point_count} snapshot · cập nhật mỗi giờ + sau mỗi lệnh
+            Retention {data.retention_days} ngày · {data.point_count} snapshot
           </p>
         </>
       )}

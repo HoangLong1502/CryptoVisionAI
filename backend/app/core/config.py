@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     live_broadcast_ms: int = 200
     metadata_refresh_seconds: int = 30
     debate_cache_seconds: int = 300
-    paper_trading_initial_balance: float = 10_000.0
+    paper_trading_initial_balance: float = 1000
     paper_wallet_path: str = 'data/paper_wallet.json'
     custom_watchlist_path: str = 'data/custom_watchlist.json'
     screener_refresh_seconds: int = 600
