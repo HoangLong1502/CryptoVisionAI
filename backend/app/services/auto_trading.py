@@ -83,10 +83,10 @@ def get_status() -> Dict[str, Any]:
         'settings': {
             'interval_ms': settings.auto_trade_interval_ms,
             'interval_seconds': settings.auto_trade_interval_ms / 1000.0,
-            'buy_usd': settings.auto_trade_buy_usd,
-            'max_positions': settings.auto_trade_max_positions,
-            'max_cash_pct': settings.auto_trade_max_cash_pct,
             'cooldown_seconds': settings.auto_trade_cooldown_seconds,
+            'min_profit_usd': settings.auto_trade_min_profit_usd,
+            'budget_mode': 'agent_full_cash',
+            'max_deploy_pct': 1.0,
         },
     }
 
@@ -113,7 +113,7 @@ async def _ai_signal(symbol: str, holdings: float = 0.0) -> Dict[str, Any]:
 
 
 async def run_cycle(*, force: bool = False) -> Dict[str, Any]:
-    """One auto-trading pass: sell AI-sell picks, then buy AI-buy picks."""
+    """One auto-trading pass: take profit on winners, sell AI-sell picks, then buy AI-buy picks."""
     from app.services.paper_trading import buy_coin, get_wallet_snapshot, sell_coin
     from app.services.watchlist_store import get_effective_watchlist
 
@@ -129,15 +129,40 @@ async def run_cycle(*, force: bool = False) -> Dict[str, Any]:
             wallet = get_wallet_snapshot()
             held = {h['symbol']: h for h in wallet.get('holdings', [])}
 
+            min_profit = float(settings.auto_trade_min_profit_usd)
+
             for sym, row in list(held.items()):
+                qty = float(row.get('quantity') or 0)
+                if qty <= 0:
+                    continue
+
+                pnl_usd = float(row.get('pnl_usd') or 0)
+                if pnl_usd >= min_profit:
+                    reason = f'Take profit · +${pnl_usd:.2f} unrealized (min ${min_profit:.2f})'
+                    try:
+                        res = sell_coin(sym, sell_all=True, source='auto', reason=reason)
+                        action = {
+                            'side': 'sell',
+                            'symbol': sym,
+                            'amount_usd': res['trade']['amount_usd'],
+                            'message': res['message'],
+                            'reason': 'take_profit',
+                            'pnl_usd': round(pnl_usd, 2),
+                        }
+                        actions.append(action)
+                        with _state_lock:
+                            state = _load_state()
+                            _log_action(state, action)
+                            state['stats']['total_sells'] = int(state['stats'].get('total_sells', 0)) + 1
+                            _save_state(state)
+                    except ValueError as e:
+                        actions.append({'side': 'sell', 'symbol': sym, 'skipped': True, 'error': str(e)})
+                    continue
+
                 with _state_lock:
                     state = _load_state()
                     if _on_cooldown(state, sym):
                         continue
-
-                qty = float(row.get('quantity') or 0)
-                if qty <= 0:
-                    continue
 
                 sig = await _ai_signal(sym, holdings=qty)
                 if str(sig.get('ai_verdict', 'hold')) != 'sell':
@@ -167,10 +192,9 @@ async def run_cycle(*, force: bool = False) -> Dict[str, Any]:
             wallet = get_wallet_snapshot()
             held_syms = {h['symbol'] for h in wallet.get('holdings', [])}
             cash = float(wallet.get('cash_usd') or 0)
-            slots = max(0, settings.auto_trade_max_positions - len(held_syms))
 
-            if slots > 0 and cash >= 1:
-                candidates: List[tuple[str, Dict[str, Any]]] = []
+            if cash >= 1:
+                candidates: List[Dict[str, Any]] = []
                 for sym in get_effective_watchlist():
                     if sym in held_syms:
                         continue
@@ -180,44 +204,62 @@ async def run_cycle(*, force: bool = False) -> Dict[str, Any]:
                             continue
                     sig = await _ai_signal(sym, holdings=0.0)
                     if str(sig.get('ai_verdict')) == 'buy' or sig.get('is_buy_pick'):
-                        candidates.append((sym, sig))
+                        row = {'symbol': sym, **sig}
+                        candidates.append(row)
 
-                candidates.sort(key=lambda x: float(x[1].get('ai_confidence') or 0), reverse=True)
+                if candidates:
+                    from app.services.coin_agent_orchestrator import orchestrator
 
-                for sym, sig in candidates[:slots]:
-                    wallet = get_wallet_snapshot()
-                    cash = float(wallet.get('cash_usd') or 0)
-                    if cash < 1:
-                        break
-
-                    amount = min(
-                        settings.auto_trade_buy_usd,
-                        cash * settings.auto_trade_max_cash_pct,
+                    plan = await orchestrator.suggest_buy_allocations(
+                        candidates,
                         cash,
                     )
-                    if amount < 1:
-                        break
+                    plan_rationale = str(plan.get('rationale') or '')
 
-                    conf = sig.get('ai_confidence', 0)
-                    reason = f'AI BUY · {conf}% confidence · {sig.get("ai_buy_votes", 0)} buy votes'
-                    try:
-                        res = buy_coin(sym, amount, source='auto', reason=reason)
-                        action = {
-                            'side': 'buy',
-                            'symbol': sym,
-                            'amount_usd': res['trade']['amount_usd'],
-                            'message': res['message'],
-                            'ai_verdict': 'buy',
-                            'ai_confidence': conf,
-                        }
-                        actions.append(action)
-                        with _state_lock:
-                            state = _load_state()
-                            _log_action(state, action)
-                            state['stats']['total_buys'] = int(state['stats'].get('total_buys', 0)) + 1
-                            _save_state(state)
-                    except ValueError as e:
-                        actions.append({'side': 'buy', 'symbol': sym, 'skipped': True, 'error': str(e)})
+                    for sym, amount in (plan.get('allocations') or {}).items():
+                        wallet = get_wallet_snapshot()
+                        cash = float(wallet.get('cash_usd') or 0)
+                        amount = round(float(amount), 2)
+
+                        if amount < 1:
+                            actions.append({
+                                'side': 'buy',
+                                'symbol': sym,
+                                'skipped': True,
+                                'error': 'Agent skipped — below $1 minimum',
+                            })
+                            continue
+                        if amount > cash:
+                            actions.append({
+                                'side': 'buy',
+                                'symbol': sym,
+                                'skipped': True,
+                                'error': f'Insufficient cash: need ${amount:.2f}, have ${cash:.2f}',
+                            })
+                            continue
+
+                        sig = next((c for c in candidates if c.get('symbol') == sym), {})
+                        conf = sig.get('ai_confidence', 0)
+                        reason = f'AI BUY · ${amount:.2f} · {plan_rationale[:120]}'
+                        try:
+                            res = buy_coin(sym, amount, source='auto', reason=reason)
+                            action = {
+                                'side': 'buy',
+                                'symbol': sym,
+                                'amount_usd': res['trade']['amount_usd'],
+                                'message': res['message'],
+                                'ai_verdict': 'buy',
+                                'ai_confidence': conf,
+                                'allocation_rationale': plan_rationale,
+                            }
+                            actions.append(action)
+                            with _state_lock:
+                                state = _load_state()
+                                _log_action(state, action)
+                                state['stats']['total_buys'] = int(state['stats'].get('total_buys', 0)) + 1
+                                _save_state(state)
+                        except ValueError as e:
+                            actions.append({'side': 'buy', 'symbol': sym, 'skipped': True, 'error': str(e)})
 
             with _state_lock:
                 state = _load_state()

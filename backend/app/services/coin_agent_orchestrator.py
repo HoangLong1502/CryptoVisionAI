@@ -351,5 +351,100 @@ class CoinAgentOrchestrator:
             },
         }
 
+    async def _risk_multiplier_for(self, symbol: str) -> float:
+        """0.5 (high risk) – 1.0 (low risk) from volatility snapshot."""
+        try:
+            prices = await get_historical_prices(symbol, days=30)
+            hist = await full_historical_analysis(symbol, prices)
+            if hist.get('status') != 'ok':
+                return 0.75
+            level = (hist.get('volatility') or {}).get('level', 'medium')
+            return {'low': 1.0, 'medium': 0.85, 'high': 0.55}.get(level, 0.75)
+        except Exception:
+            return 0.75
+
+    async def suggest_buy_allocations(
+        self,
+        candidates: List[Dict[str, Any]],
+        available_cash_usd: float,
+    ) -> Dict[str, Any]:
+        """
+        Portfolio committee sizes buys from up to 100% of available cash.
+        All buy candidates may receive a slice; may leave surplus unspent.
+        Skips symbols below $1 or when cash is insufficient.
+        """
+        cash = max(0.0, float(available_cash_usd))
+        if cash < 1 or not candidates:
+            return {
+                'allocations': {},
+                'deploy_usd': 0.0,
+                'reserve_usd': round(cash, 2),
+                'deploy_ratio': 0.0,
+                'rationale': 'Không đủ tiền mặt hoặc không có mã đáng mua.',
+            }
+
+        picks = sorted(
+            candidates,
+            key=lambda c: float(c.get('ai_confidence') or 0),
+            reverse=True,
+        )
+
+        weights: Dict[str, float] = {}
+        confidences: List[float] = []
+        risk_notes: List[str] = []
+
+        for pick in picks:
+            sym = str(pick.get('symbol', '')).upper()
+            if not sym:
+                continue
+            conf = float(pick.get('ai_confidence') or 0) / 100.0
+            buy_votes = int(pick.get('ai_buy_votes') or 0)
+            vote_factor = 0.55 + min(buy_votes, 5) * 0.09
+            risk_mult = await self._risk_multiplier_for(sym)
+            weights[sym] = max(0.01, conf * vote_factor * risk_mult)
+            confidences.append(conf)
+            risk_notes.append(f'{sym} risk×{risk_mult:.2f}')
+
+        if not weights:
+            return {
+                'allocations': {},
+                'deploy_usd': 0.0,
+                'reserve_usd': round(cash, 2),
+                'deploy_ratio': 0.0,
+                'rationale': 'Không có mã hợp lệ để phân bổ.',
+            }
+
+        avg_conf = sum(confidences) / len(confidences)
+        # Confident committee deploys more; uncertain committee keeps cash reserve.
+        deploy_ratio = min(0.98, max(0.15, avg_conf * 0.88 + 0.12))
+        total_deploy = round(cash * deploy_ratio, 2)
+        sum_w = sum(weights.values())
+
+        raw_allocs: Dict[str, float] = {
+            sym: total_deploy * (w / sum_w) for sym, w in weights.items()
+        }
+        allocations: Dict[str, float] = {}
+        for sym, raw in raw_allocs.items():
+            amt = round(raw, 2)
+            if amt >= 1.0:
+                allocations[sym] = amt
+
+        deployed = round(sum(allocations.values()), 2)
+        reserve = round(cash - deployed, 2)
+        rationale = (
+            f'Portfolio Advisor: phân bổ ${deployed:.2f}/{cash:.2f} '
+            f'({deploy_ratio:.0%} ví) cho {len(allocations)} mã; '
+            f'giữ lại ${reserve:.2f}. '
+            f'Độ tin cậy TB {avg_conf:.0%}. '
+            + ', '.join(risk_notes[:3])
+        )
+        return {
+            'allocations': allocations,
+            'deploy_usd': deployed,
+            'reserve_usd': reserve,
+            'deploy_ratio': round(deploy_ratio, 4),
+            'rationale': rationale,
+        }
+
 
 orchestrator = CoinAgentOrchestrator()

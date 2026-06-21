@@ -275,10 +275,10 @@ export type AutoTradingStatus = {
   settings: {
     interval_ms: number;
     interval_seconds: number;
-    buy_usd: number;
-    max_positions: number;
-    max_cash_pct: number;
     cooldown_seconds: number;
+    min_profit_usd: number;
+    budget_mode: string;
+    max_deploy_pct: number;
   };
 };
 

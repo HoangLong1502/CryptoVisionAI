@@ -16,10 +16,8 @@ class Settings(BaseSettings):
     screener_cache_seconds: int = 600
     auto_trading_state_path: str = 'data/auto_trading.json'
     auto_trade_interval_ms: int = 200
-    auto_trade_buy_usd: float = 100.0
-    auto_trade_max_positions: int = 5
-    auto_trade_max_cash_pct: float = 0.15
     auto_trade_cooldown_seconds: int = 300
+    auto_trade_min_profit_usd: float = 0.25
     performance_history_path: str = 'data/performance_history.json'
     performance_snapshot_min_seconds: int = 3600
 
