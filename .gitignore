@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 .venv/
 
+# Secrets
+.env
+backend/.env
+
 # Runtime data
 backend/data/*.json
 

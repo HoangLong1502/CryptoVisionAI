@@ -236,18 +236,28 @@ export default function PaperWallet({ onWalletChange }: { readonly onWalletChang
             Bot đang chạy — tự mua/bán theo AI committee
           </p>
           <p className="mt-1 text-slate-400">
-            Agent phân bổ từ 100% tiền mặt · không giới hạn số mã · chốt lời ≥ $
-            {autoTrading.settings.min_profit_usd ?? 1}/mã · chu kỳ {autoTrading.settings.interval_ms ?? 200}ms
-            {autoTrading.stats?.total_buys || autoTrading.stats?.total_sells ? (
+            Tối đa {Math.round((autoTrading.settings.max_deploy_pct ?? 0.8) * 100)}% vốn vào coin · tối đa{' '}
+            {Math.round((autoTrading.settings.max_position_pct ?? 0.2) * 100)}%/mã · stop-loss -
+            {autoTrading.settings.stop_loss_pct ?? 5}% · chốt lời ≥ ${autoTrading.settings.min_profit_usd ?? 1}
+            {autoTrading.risk ? (
               <>
                 {' '}
-                · đã mua {autoTrading.stats.total_buys ?? 0} · đã bán {autoTrading.stats.total_sells ?? 0}
+                · drawdown {autoTrading.risk.drawdown_pct.toFixed(1)}% (giới hạn{' '}
+                {autoTrading.settings.max_drawdown_pct ?? 15}%)
               </>
             ) : null}
           </p>
           {autoTrading.last_error ? (
             <p className="mt-1 text-rose-400">Lỗi gần nhất: {autoTrading.last_error}</p>
           ) : null}
+        </div>
+      ) : null}
+
+      {autoTrading?.risk_halted ? (
+        <div className="mb-4 rounded-xl border border-rose-500/40 bg-rose-950/30 px-4 py-3 text-xs text-rose-100">
+          <p className="font-semibold text-rose-300">Bot đã dừng khẩn cấp (circuit breaker)</p>
+          <p className="mt-1 text-slate-400">{autoTrading.risk_halt_reason}</p>
+          <p className="mt-1 text-slate-500">Reset ví hoặc chờ tài khoản hồi phục dưới ngưỡng drawdown rồi bật lại.</p>
         </div>
       ) : null}
 

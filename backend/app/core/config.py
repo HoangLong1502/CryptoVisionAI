@@ -5,6 +5,8 @@ class Settings(BaseSettings):
     coingecko_base: str = 'https://api.coingecko.com/api/v3'
     binance_api_base: str = 'https://api.binance.com'
     binance_ws_base: str = 'wss://stream.binance.com:9443'
+    binance_api_key: str = ''
+    binance_api_secret: str = ''
     sync_ttl_seconds: int = 60
     live_broadcast_ms: int = 200
     metadata_refresh_seconds: int = 30
@@ -18,6 +20,12 @@ class Settings(BaseSettings):
     auto_trade_interval_ms: int = 200
     auto_trade_cooldown_seconds: int = 300
     auto_trade_min_profit_usd: float = 0.25
+    # Risk limits — tránh cháy tài khoản
+    auto_trade_max_deploy_pct: float = 0.80
+    auto_trade_max_position_pct: float = 0.20
+    auto_trade_stop_loss_pct: float = 5.0
+    auto_trade_stop_loss_usd: float = 0.0
+    auto_trade_max_drawdown_pct: float = 15.0
     performance_history_path: str = 'data/performance_history.json'
     performance_snapshot_min_seconds: int = 3600
 
