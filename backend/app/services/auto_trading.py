@@ -22,9 +22,15 @@ def _default_state() -> Dict[str, Any]:
         'enabled': False,
         'last_run_at': None,
         'last_error': None,
+        'risk_halted': False,
+        'risk_halt_reason': None,
+        'risk_halted_at': None,
         'cooldowns': {},
         'recent_actions': [],
-        'stats': {'total_buys': 0, 'total_sells': 0, 'cycles': 0},
+        'stats': {'total_buys': 0, 'total_sells': 0, 'cycles': 0, 'stop_losses': 0},
+        'consecutive_losses': 0,
+        'daily_pnl_usd': 0.0,
+        'daily_reset_date': None,
     }
 
 
@@ -37,7 +43,13 @@ def _load_state() -> Dict[str, Any]:
                 base.update(data)
                 base.setdefault('cooldowns', {})
                 base.setdefault('recent_actions', [])
-                base.setdefault('stats', {'total_buys': 0, 'total_sells': 0, 'cycles': 0})
+                base.setdefault('stats', {'total_buys': 0, 'total_sells': 0, 'cycles': 0, 'stop_losses': 0})
+                base.setdefault('risk_halted', False)
+                base.setdefault('risk_halt_reason', None)
+                base.setdefault('risk_halted_at', None)
+                base.setdefault('consecutive_losses', 0)
+                base.setdefault('daily_pnl_usd', 0.0)
+                base.setdefault('daily_reset_date', None)
                 return base
         except (json.JSONDecodeError, OSError, TypeError):
             pass
@@ -71,33 +83,190 @@ def _on_cooldown(state: Dict[str, Any], symbol: str) -> bool:
     return time.monotonic() - float(ts) < settings.auto_trade_cooldown_seconds
 
 
+def _risk_settings() -> Dict[str, Any]:
+    return {
+        'max_deploy_pct': settings.auto_trade_max_deploy_pct,
+        'max_position_pct': settings.auto_trade_max_position_pct,
+        'stop_loss_pct': settings.auto_trade_stop_loss_pct,
+        'stop_loss_usd': settings.auto_trade_stop_loss_usd,
+        'max_drawdown_pct': settings.auto_trade_max_drawdown_pct,
+        'min_profit_usd': settings.auto_trade_min_profit_usd,
+        'min_buy_score': settings.auto_trade_min_buy_score,
+        'kill_consecutive_losses': settings.auto_trade_kill_consecutive_losses,
+        'kill_daily_loss_pct': settings.auto_trade_kill_daily_loss_pct,
+    }
+
+
+def _wallet_risk_metrics(wallet: Dict[str, Any]) -> Dict[str, Any]:
+    initial = float(wallet.get('initial_balance_usd') or settings.paper_trading_initial_balance)
+    equity = float(wallet.get('total_equity_usd') or 0)
+    cash = float(wallet.get('cash_usd') or 0)
+    invested = float(wallet.get('holdings_value_usd') or 0)
+    pnl = equity - initial
+    drawdown_pct = max(0.0, (initial - equity) / initial * 100) if initial > 0 else 0.0
+    deploy_pct = invested / equity if equity > 0 else 0.0
+    room_deploy_usd = max(0.0, equity * settings.auto_trade_max_deploy_pct - invested)
+    return {
+        'initial_balance_usd': round(initial, 2),
+        'total_equity_usd': round(equity, 2),
+        'cash_usd': round(cash, 2),
+        'invested_usd': round(invested, 2),
+        'deploy_pct': round(deploy_pct * 100, 2),
+        'drawdown_pct': round(drawdown_pct, 2),
+        'pnl_usd': round(pnl, 2),
+        'room_deploy_usd': round(min(room_deploy_usd, cash), 2),
+        'at_drawdown_limit': drawdown_pct >= settings.auto_trade_max_drawdown_pct,
+    }
+
+
+def _position_stop_loss_triggered(row: Dict[str, Any]) -> bool:
+    pnl_usd = float(row.get('pnl_usd') or 0)
+    pnl_pct = float(row.get('pnl_pct') or 0)
+    if pnl_pct <= -abs(settings.auto_trade_stop_loss_pct):
+        return True
+    min_usd = float(settings.auto_trade_stop_loss_usd or 0)
+    if min_usd > 0 and pnl_usd <= -min_usd:
+        return True
+    return False
+
+
+def _cap_buy_allocations(
+    allocations: Dict[str, float],
+    wallet: Dict[str, Any],
+    held: Dict[str, Dict[str, Any]],
+) -> Dict[str, float]:
+    """Clamp buys to deploy cap and per-position upper limit."""
+    metrics = _wallet_risk_metrics(wallet)
+    equity = float(metrics['total_equity_usd'])
+    room = float(metrics['room_deploy_usd'])
+    max_pos = equity * settings.auto_trade_max_position_pct
+
+    capped: Dict[str, float] = {}
+    budget_left = room
+    for sym, amount in sorted(allocations.items(), key=lambda x: -x[1]):
+        if budget_left < 1:
+            break
+        existing = float((held.get(sym) or {}).get('value_usd') or 0)
+        pos_room = max(0.0, max_pos - existing)
+        amt = min(float(amount), budget_left, pos_room)
+        amt = round(amt, 2)
+        if amt >= 1:
+            capped[sym] = amt
+            budget_left = round(budget_left - amt, 2)
+    return capped
+
+
+def _halt_for_risk(state: Dict[str, Any], reason: str) -> None:
+    state['enabled'] = False
+    state['risk_halted'] = True
+    state['risk_halt_reason'] = reason
+    state['risk_halted_at'] = _utc_now()
+    state['last_error'] = reason
+
+
+def _today_utc() -> str:
+    return datetime.now(timezone.utc).strftime('%Y-%m-%d')
+
+
+def _sync_daily_pnl(state: Dict[str, Any], wallet: Dict[str, Any]) -> float:
+    today = _today_utc()
+    if state.get('daily_reset_date') != today:
+        state['daily_reset_date'] = today
+        initial = float(wallet.get('initial_balance_usd') or settings.paper_trading_initial_balance)
+        state['daily_start_equity'] = float(wallet.get('total_equity_usd') or initial)
+        state['daily_pnl_usd'] = 0.0
+    start_eq = float(state.get('daily_start_equity') or wallet.get('total_equity_usd') or 0)
+    state['daily_pnl_usd'] = float(wallet.get('total_equity_usd') or 0) - start_eq
+    return float(state['daily_pnl_usd'])
+
+
+def _check_kill_switch(state: Dict[str, Any], wallet: Dict[str, Any]) -> Optional[str]:
+    metrics = _wallet_risk_metrics(wallet)
+    if metrics['at_drawdown_limit']:
+        return (
+            f'Kill switch: drawdown {metrics["drawdown_pct"]:.1f}% ≥ '
+            f'{settings.auto_trade_max_drawdown_pct:.1f}%'
+        )
+
+    daily_pnl = _sync_daily_pnl(state, wallet)
+    initial = float(wallet.get('initial_balance_usd') or settings.paper_trading_initial_balance)
+    daily_loss_pct = max(0.0, -daily_pnl / initial * 100) if initial > 0 else 0.0
+    if daily_loss_pct >= settings.auto_trade_kill_daily_loss_pct:
+        return f'Kill switch: daily loss {daily_loss_pct:.1f}% ≥ {settings.auto_trade_kill_daily_loss_pct:.1f}%'
+
+    losses = int(state.get('consecutive_losses') or 0)
+    if losses >= settings.auto_trade_kill_consecutive_losses:
+        return f'Kill switch: {losses} consecutive losing trades'
+
+    return None
+
+
+def _record_sell_outcome(state: Dict[str, Any], pnl_usd: float) -> None:
+    if pnl_usd < 0:
+        state['consecutive_losses'] = int(state.get('consecutive_losses') or 0) + 1
+    else:
+        state['consecutive_losses'] = 0
+
+
 def get_status() -> Dict[str, Any]:
+    from app.services.paper_trading import get_wallet_snapshot
+
     with _state_lock:
         state = _load_state()
+    wallet = get_wallet_snapshot()
+    metrics = _wallet_risk_metrics(wallet)
     return {
         'enabled': bool(state.get('enabled')),
+        'risk_halted': bool(state.get('risk_halted')),
+        'risk_halt_reason': state.get('risk_halt_reason'),
+        'risk_halted_at': state.get('risk_halted_at'),
         'last_run_at': state.get('last_run_at'),
         'last_error': state.get('last_error'),
         'recent_actions': list(state.get('recent_actions') or [])[:10],
         'stats': dict(state.get('stats') or {}),
+        'risk': metrics,
         'settings': {
             'interval_ms': settings.auto_trade_interval_ms,
             'interval_seconds': settings.auto_trade_interval_ms / 1000.0,
-            'buy_usd': settings.auto_trade_buy_usd,
-            'max_positions': settings.auto_trade_max_positions,
-            'max_cash_pct': settings.auto_trade_max_cash_pct,
             'cooldown_seconds': settings.auto_trade_cooldown_seconds,
+            'budget_mode': 'agent_capped_cash',
+            **_risk_settings(),
         },
     }
 
 
 def set_enabled(enabled: bool) -> Dict[str, Any]:
+    from app.services.paper_trading import get_wallet_snapshot
+
+    blocked_msg: Optional[str] = None
     with _state_lock:
         state = _load_state()
-        state['enabled'] = enabled
         if enabled:
-            state['last_error'] = None
-        _save_state(state)
+            wallet = get_wallet_snapshot()
+            metrics = _wallet_risk_metrics(wallet)
+            if metrics['at_drawdown_limit']:
+                blocked_msg = (
+                    f'Drawdown {metrics["drawdown_pct"]:.1f}% ≥ giới hạn '
+                    f'{settings.auto_trade_max_drawdown_pct:.1f}% — reset ví hoặc chờ hồi phục'
+                )
+                state['last_error'] = blocked_msg
+                _save_state(state)
+            else:
+                state['last_error'] = None
+                state['risk_halted'] = False
+                state['risk_halt_reason'] = None
+                state['enabled'] = True
+                _save_state(state)
+        else:
+            state['enabled'] = False
+            _save_state(state)
+
+    if blocked_msg:
+        status = get_status()
+        status['ok'] = False
+        status['message'] = blocked_msg
+        return status
+
     _ensure_loop()
     return get_status()
 
@@ -113,7 +282,7 @@ async def _ai_signal(symbol: str, holdings: float = 0.0) -> Dict[str, Any]:
 
 
 async def run_cycle(*, force: bool = False) -> Dict[str, Any]:
-    """One auto-trading pass: sell AI-sell picks, then buy AI-buy picks."""
+    """One auto-trading pass: risk checks, stop-loss, take profit, AI sells, capped buys."""
     from app.services.paper_trading import buy_coin, get_wallet_snapshot, sell_coin
     from app.services.watchlist_store import get_effective_watchlist
 
@@ -127,17 +296,119 @@ async def run_cycle(*, force: bool = False) -> Dict[str, Any]:
 
         try:
             wallet = get_wallet_snapshot()
+            metrics = _wallet_risk_metrics(wallet)
+
+            with _state_lock:
+                state = _load_state()
+                kill_reason = _check_kill_switch(state, wallet)
+                if kill_reason:
+                    _halt_for_risk(state, kill_reason)
+                    _save_state(state)
+                    return {'ok': False, 'halted': True, 'reason': kill_reason, 'actions': []}
+
+            if metrics['at_drawdown_limit']:
+                held = {h['symbol']: h for h in wallet.get('holdings', [])}
+                for sym in list(held.keys()):
+                    try:
+                        res = sell_coin(
+                            sym,
+                            sell_all=True,
+                            source='auto',
+                            reason=(
+                                f'Circuit breaker · drawdown {metrics["drawdown_pct"]:.1f}% '
+                                f'≥ {settings.auto_trade_max_drawdown_pct:.1f}%'
+                            ),
+                        )
+                        actions.append({
+                            'side': 'sell',
+                            'symbol': sym,
+                            'amount_usd': res['trade']['amount_usd'],
+                            'message': res['message'],
+                            'reason': 'circuit_breaker',
+                        })
+                    except ValueError as e:
+                        actions.append({'side': 'sell', 'symbol': sym, 'skipped': True, 'error': str(e)})
+
+                reason = (
+                    f'Dừng bot: drawdown {metrics["drawdown_pct"]:.1f}% vượt giới hạn '
+                    f'{settings.auto_trade_max_drawdown_pct:.1f}%'
+                )
+                with _state_lock:
+                    state = _load_state()
+                    _halt_for_risk(state, reason)
+                    for act in actions:
+                        if not act.get('skipped'):
+                            _log_action(state, act)
+                            state['stats']['total_sells'] = int(state['stats'].get('total_sells', 0)) + 1
+                    _save_state(state)
+                return {'ok': False, 'halted': True, 'reason': reason, 'actions': actions}
+
             held = {h['symbol']: h for h in wallet.get('holdings', [])}
+            min_profit = float(settings.auto_trade_min_profit_usd)
 
             for sym, row in list(held.items()):
+                qty = float(row.get('quantity') or 0)
+                if qty <= 0:
+                    continue
+
+                pnl_usd = float(row.get('pnl_usd') or 0)
+                pnl_pct = float(row.get('pnl_pct') or 0)
+
+                if _position_stop_loss_triggered(row):
+                    reason = (
+                        f'Stop-loss · {pnl_pct:+.1f}% (${pnl_usd:+.2f}) '
+                        f'≤ -{settings.auto_trade_stop_loss_pct:.1f}%'
+                    )
+                    try:
+                        res = sell_coin(sym, sell_all=True, source='auto', reason=reason)
+                        action = {
+                            'side': 'sell',
+                            'symbol': sym,
+                            'amount_usd': res['trade']['amount_usd'],
+                            'message': res['message'],
+                            'reason': 'stop_loss',
+                            'pnl_usd': round(pnl_usd, 2),
+                            'pnl_pct': round(pnl_pct, 2),
+                        }
+                        actions.append(action)
+                        with _state_lock:
+                            state = _load_state()
+                            _log_action(state, action)
+                            state['stats']['total_sells'] = int(state['stats'].get('total_sells', 0)) + 1
+                            state['stats']['stop_losses'] = int(state['stats'].get('stop_losses', 0)) + 1
+                            _record_sell_outcome(state, pnl_usd)
+                            _save_state(state)
+                    except ValueError as e:
+                        actions.append({'side': 'sell', 'symbol': sym, 'skipped': True, 'error': str(e)})
+                    continue
+
+                if pnl_usd >= min_profit:
+                    reason = f'Take profit · +${pnl_usd:.2f} unrealized (min ${min_profit:.2f})'
+                    try:
+                        res = sell_coin(sym, sell_all=True, source='auto', reason=reason)
+                        action = {
+                            'side': 'sell',
+                            'symbol': sym,
+                            'amount_usd': res['trade']['amount_usd'],
+                            'message': res['message'],
+                            'reason': 'take_profit',
+                            'pnl_usd': round(pnl_usd, 2),
+                        }
+                        actions.append(action)
+                        with _state_lock:
+                            state = _load_state()
+                            _log_action(state, action)
+                            state['stats']['total_sells'] = int(state['stats'].get('total_sells', 0)) + 1
+                            _record_sell_outcome(state, pnl_usd)
+                            _save_state(state)
+                    except ValueError as e:
+                        actions.append({'side': 'sell', 'symbol': sym, 'skipped': True, 'error': str(e)})
+                    continue
+
                 with _state_lock:
                     state = _load_state()
                     if _on_cooldown(state, sym):
                         continue
-
-                qty = float(row.get('quantity') or 0)
-                if qty <= 0:
-                    continue
 
                 sig = await _ai_signal(sym, holdings=qty)
                 if str(sig.get('ai_verdict', 'hold')) != 'sell':
@@ -154,23 +425,26 @@ async def run_cycle(*, force: bool = False) -> Dict[str, Any]:
                         'message': res['message'],
                         'ai_verdict': 'sell',
                         'ai_confidence': conf,
+                        'pnl_usd': round(pnl_usd, 2),
                     }
                     actions.append(action)
                     with _state_lock:
                         state = _load_state()
                         _log_action(state, action)
                         state['stats']['total_sells'] = int(state['stats'].get('total_sells', 0)) + 1
+                        _record_sell_outcome(state, pnl_usd)
                         _save_state(state)
                 except ValueError as e:
                     actions.append({'side': 'sell', 'symbol': sym, 'skipped': True, 'error': str(e)})
 
             wallet = get_wallet_snapshot()
             held_syms = {h['symbol'] for h in wallet.get('holdings', [])}
-            cash = float(wallet.get('cash_usd') or 0)
-            slots = max(0, settings.auto_trade_max_positions - len(held_syms))
+            held_map = {h['symbol']: h for h in wallet.get('holdings', [])}
+            metrics = _wallet_risk_metrics(wallet)
+            cash = float(metrics['room_deploy_usd'])
 
-            if slots > 0 and cash >= 1:
-                candidates: List[tuple[str, Dict[str, Any]]] = []
+            if cash >= 1 and not metrics['at_drawdown_limit']:
+                candidates: List[Dict[str, Any]] = []
                 for sym in get_effective_watchlist():
                     if sym in held_syms:
                         continue
@@ -179,45 +453,76 @@ async def run_cycle(*, force: bool = False) -> Dict[str, Any]:
                         if _on_cooldown(state, sym):
                             continue
                     sig = await _ai_signal(sym, holdings=0.0)
-                    if str(sig.get('ai_verdict')) == 'buy' or sig.get('is_buy_pick'):
-                        candidates.append((sym, sig))
+                    if not sig.get('is_buy_pick'):
+                        continue
+                    if sig.get('setup_veto'):
+                        continue
+                    buy_score = float(sig.get('buy_score') or 0)
+                    if buy_score < settings.auto_trade_min_buy_score:
+                        continue
+                    if str(sig.get('buy_quality')) not in ('strong', 'moderate'):
+                        continue
+                    row = {'symbol': sym, **sig}
+                    candidates.append(row)
 
-                candidates.sort(key=lambda x: float(x[1].get('ai_confidence') or 0), reverse=True)
+                if candidates:
+                    from app.services.coin_agent_orchestrator import orchestrator
 
-                for sym, sig in candidates[:slots]:
-                    wallet = get_wallet_snapshot()
-                    cash = float(wallet.get('cash_usd') or 0)
-                    if cash < 1:
-                        break
-
-                    amount = min(
-                        settings.auto_trade_buy_usd,
-                        cash * settings.auto_trade_max_cash_pct,
+                    plan = await orchestrator.suggest_buy_allocations(
+                        candidates,
                         cash,
                     )
-                    if amount < 1:
-                        break
+                    plan_rationale = str(plan.get('rationale') or '')
+                    allocations = _cap_buy_allocations(
+                        plan.get('allocations') or {},
+                        get_wallet_snapshot(),
+                        held_map,
+                    )
 
-                    conf = sig.get('ai_confidence', 0)
-                    reason = f'AI BUY · {conf}% confidence · {sig.get("ai_buy_votes", 0)} buy votes'
-                    try:
-                        res = buy_coin(sym, amount, source='auto', reason=reason)
-                        action = {
-                            'side': 'buy',
-                            'symbol': sym,
-                            'amount_usd': res['trade']['amount_usd'],
-                            'message': res['message'],
-                            'ai_verdict': 'buy',
-                            'ai_confidence': conf,
-                        }
-                        actions.append(action)
-                        with _state_lock:
-                            state = _load_state()
-                            _log_action(state, action)
-                            state['stats']['total_buys'] = int(state['stats'].get('total_buys', 0)) + 1
-                            _save_state(state)
-                    except ValueError as e:
-                        actions.append({'side': 'buy', 'symbol': sym, 'skipped': True, 'error': str(e)})
+                    for sym, amount in allocations.items():
+                        wallet = get_wallet_snapshot()
+                        cash_now = float(_wallet_risk_metrics(wallet)['room_deploy_usd'])
+                        amount = round(float(amount), 2)
+
+                        if amount < 1:
+                            actions.append({
+                                'side': 'buy',
+                                'symbol': sym,
+                                'skipped': True,
+                                'error': 'Agent skipped — below $1 minimum',
+                            })
+                            continue
+                        if amount > cash_now:
+                            actions.append({
+                                'side': 'buy',
+                                'symbol': sym,
+                                'skipped': True,
+                                'error': f'Risk cap: need ${amount:.2f}, room ${cash_now:.2f}',
+                            })
+                            continue
+
+                        sig = next((c for c in candidates if c.get('symbol') == sym), {})
+                        conf = sig.get('ai_confidence', 0)
+                        reason = f'AI BUY · ${amount:.2f} · {plan_rationale[:120]}'
+                        try:
+                            res = buy_coin(sym, amount, source='auto', reason=reason)
+                            action = {
+                                'side': 'buy',
+                                'symbol': sym,
+                                'amount_usd': res['trade']['amount_usd'],
+                                'message': res['message'],
+                                'ai_verdict': 'buy',
+                                'ai_confidence': conf,
+                                'allocation_rationale': plan_rationale,
+                            }
+                            actions.append(action)
+                            with _state_lock:
+                                state = _load_state()
+                                _log_action(state, action)
+                                state['stats']['total_buys'] = int(state['stats'].get('total_buys', 0)) + 1
+                                _save_state(state)
+                        except ValueError as e:
+                            actions.append({'side': 'buy', 'symbol': sym, 'skipped': True, 'error': str(e)})
 
             with _state_lock:
                 state = _load_state()

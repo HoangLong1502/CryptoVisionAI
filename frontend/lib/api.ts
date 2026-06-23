@@ -268,17 +268,34 @@ export type AutoTradingAction = {
 
 export type AutoTradingStatus = {
   enabled: boolean;
+  risk_halted?: boolean;
+  risk_halt_reason?: string | null;
+  risk_halted_at?: string | null;
   last_run_at?: string | null;
   last_error?: string | null;
   recent_actions: AutoTradingAction[];
-  stats: { total_buys?: number; total_sells?: number; cycles?: number };
+  stats: { total_buys?: number; total_sells?: number; cycles?: number; stop_losses?: number };
+  risk?: {
+    drawdown_pct: number;
+    deploy_pct: number;
+    room_deploy_usd: number;
+    at_drawdown_limit: boolean;
+    pnl_usd: number;
+  };
   settings: {
     interval_ms: number;
     interval_seconds: number;
-    buy_usd: number;
-    max_positions: number;
-    max_cash_pct: number;
     cooldown_seconds: number;
+    min_profit_usd: number;
+    max_deploy_pct: number;
+    max_position_pct: number;
+    stop_loss_pct: number;
+    stop_loss_usd: number;
+    max_drawdown_pct: number;
+    min_buy_score: number;
+    kill_consecutive_losses: number;
+    kill_daily_loss_pct: number;
+    budget_mode: string;
   };
 };
 

@@ -145,7 +145,7 @@ export default function PaperWallet({ onWalletChange }: { readonly onWalletChang
   };
 
   const handleReset = async () => {
-    if (!globalThis.confirm('Reset ví ảo về $10,000 và xóa toàn bộ coin đang giữ?')) return;
+    if (!globalThis.confirm('Reset ví ảo về $1,000 và xóa toàn bộ coin đang giữ?')) return;
     setResetting(true);
     setError(null);
     try {
@@ -182,7 +182,7 @@ export default function PaperWallet({ onWalletChange }: { readonly onWalletChang
           </span>
           <div>
             <h2 className="text-lg font-bold text-white">Ví tiền ảo (Paper)</h2>
-            <p className="text-xs text-slate-500">$10,000 USDT ban đầu · giá live từ Binance</p>
+            <p className="text-xs text-slate-500">$1,000 USDT ban đầu · giá live từ Binance</p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -236,18 +236,27 @@ export default function PaperWallet({ onWalletChange }: { readonly onWalletChang
             Bot đang chạy — tự mua/bán theo AI committee
           </p>
           <p className="mt-1 text-slate-400">
-            ${autoTrading.settings.buy_usd}/lệnh · tối đa {autoTrading.settings.max_positions} vị thế · chu kỳ{' '}
-            {autoTrading.settings.interval_ms ?? 200}ms
-            {autoTrading.stats?.total_buys || autoTrading.stats?.total_sells ? (
+            Tối đa {Math.round((autoTrading.settings.max_deploy_pct ?? 0.8) * 100)}% vốn · stop-loss -
+            {autoTrading.settings.stop_loss_pct ?? 5}% · entry ≥ {autoTrading.settings.min_buy_score ?? 70}/100
+            {autoTrading.risk ? (
               <>
                 {' '}
-                · đã mua {autoTrading.stats.total_buys ?? 0} · đã bán {autoTrading.stats.total_sells ?? 0}
+                · drawdown {autoTrading.risk.drawdown_pct.toFixed(1)}% (max{' '}
+                {autoTrading.settings.max_drawdown_pct ?? 10}%)
               </>
             ) : null}
           </p>
           {autoTrading.last_error ? (
             <p className="mt-1 text-rose-400">Lỗi gần nhất: {autoTrading.last_error}</p>
           ) : null}
+        </div>
+      ) : null}
+
+      {autoTrading?.risk_halted ? (
+        <div className="mb-4 rounded-xl border border-rose-500/40 bg-rose-950/30 px-4 py-3 text-xs text-rose-100">
+          <p className="font-semibold text-rose-300">Bot đã dừng khẩn cấp (circuit breaker)</p>
+          <p className="mt-1 text-slate-400">{autoTrading.risk_halt_reason}</p>
+          <p className="mt-1 text-slate-500">Reset ví hoặc chờ tài khoản hồi phục dưới ngưỡng drawdown rồi bật lại.</p>
         </div>
       ) : null}
 

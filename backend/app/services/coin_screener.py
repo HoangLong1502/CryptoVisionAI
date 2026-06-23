@@ -18,6 +18,13 @@ VERDICT_LABELS = {
     'sell': 'Nên bán',
 }
 
+QUALITY_LABELS = {
+    'strong': 'Mạnh',
+    'moderate': 'Khá',
+    'weak': 'Yếu',
+    'avoid': 'Tránh',
+}
+
 
 def _is_fresh(symbol: str) -> bool:
     sym = symbol.upper()
@@ -27,36 +34,72 @@ def _is_fresh(symbol: str) -> bool:
     return time.monotonic() - ts < settings.screener_cache_seconds
 
 
+def _signal_from_pipeline(result: Dict[str, Any]) -> Dict[str, Any]:
+    decision = result.get('decision') or {}
+    verdict = str(decision.get('verdict', 'hold'))
+    score = float(decision.get('score', 0))
+    extra = decision.get('extra') or {}
+    buy_votes = int(extra.get('buy_agents', 0))
+
+    buy_setup = result.get('buy_setup') or {}
+    confidence = float(buy_setup.get('confidence') or extra.get('buy_setup_score', 0) * 100 or score * 100)
+    buy_quality = str(buy_setup.get('quality') or extra.get('buy_quality') or 'weak')
+    confluence = int(buy_setup.get('confluence') or extra.get('confluence') or 0)
+    veto = bool(buy_setup.get('veto') or extra.get('setup_veto'))
+    engine_decision = str(buy_setup.get('decision') or verdict)
+
+    min_conf = float(settings.auto_trade_min_buy_score)
+    is_buy = (
+        engine_decision == 'buy'
+        and verdict == 'buy'
+        and not veto
+        and buy_quality in ('strong', 'moderate')
+        and confidence >= min_conf
+        and confluence >= 4
+    )
+
+    label = VERDICT_LABELS.get(verdict, verdict)
+    if is_buy and buy_quality == 'strong':
+        label = f'{label} · {QUALITY_LABELS["strong"]}'
+
+    return {
+        'ai_verdict': verdict,
+        'ai_confidence': round(confidence, 1),
+        'buy_score': round(confidence, 1),
+        'buy_quality': buy_quality,
+        'buy_confluence': confluence,
+        'ai_buy_votes': buy_votes,
+        'ai_sell_votes': int(extra.get('sell_agents', 0)),
+        'ai_hold_votes': int(extra.get('hold_agents', 0)),
+        'ai_label': label,
+        'is_buy_pick': is_buy,
+        'setup_veto': veto,
+        'engine_regime': buy_setup.get('regime'),
+        'engine_decision': engine_decision,
+        'screened_at': result.get('timestamp'),
+    }
+
+
 async def screen_symbol(symbol: str, holdings: float = 0.0) -> Dict[str, Any]:
     from app.services.coin_agent_orchestrator import orchestrator
 
     sym = symbol.strip().upper()
     try:
         result = await orchestrator.run_coin_pipeline(sym, user_holdings=max(0.0, float(holdings)))
-        decision = result.get('decision') or {}
-        verdict = str(decision.get('verdict', 'hold'))
-        score = float(decision.get('score', 0))
-        extra = decision.get('extra') or {}
-        buy_votes = int(extra.get('buy_agents', 0))
-        return {
-            'ai_verdict': verdict,
-            'ai_confidence': round(score * 100, 1),
-            'ai_buy_votes': buy_votes,
-            'ai_sell_votes': int(extra.get('sell_agents', 0)),
-            'ai_hold_votes': int(extra.get('hold_agents', 0)),
-            'ai_label': VERDICT_LABELS.get(verdict, verdict),
-            'is_buy_pick': verdict == 'buy',
-            'screened_at': result.get('timestamp'),
-        }
+        return _signal_from_pipeline(result)
     except Exception:
         return {
             'ai_verdict': 'hold',
             'ai_confidence': 0.0,
+            'buy_score': 0.0,
+            'buy_quality': 'avoid',
+            'buy_confluence': 0,
             'ai_buy_votes': 0,
             'ai_sell_votes': 0,
             'ai_hold_votes': 0,
             'ai_label': '',
             'is_buy_pick': False,
+            'setup_veto': True,
         }
 
 
@@ -76,6 +119,8 @@ def attach_signals(watchlist: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             item.setdefault('ai_verdict', 'pending')
             item.setdefault('ai_label', '')
             item.setdefault('is_buy_pick', False)
+            item.setdefault('buy_score', 0)
+            item.setdefault('buy_quality', 'weak')
         out.append(item)
     return out
 
