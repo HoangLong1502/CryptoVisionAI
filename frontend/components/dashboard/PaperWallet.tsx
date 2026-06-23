@@ -236,14 +236,13 @@ export default function PaperWallet({ onWalletChange }: { readonly onWalletChang
             Bot đang chạy — tự mua/bán theo AI committee
           </p>
           <p className="mt-1 text-slate-400">
-            Tối đa {Math.round((autoTrading.settings.max_deploy_pct ?? 0.8) * 100)}% vốn vào coin · tối đa{' '}
-            {Math.round((autoTrading.settings.max_position_pct ?? 0.2) * 100)}%/mã · stop-loss -
-            {autoTrading.settings.stop_loss_pct ?? 5}% · chốt lời ≥ ${autoTrading.settings.min_profit_usd ?? 1}
+            Tối đa {Math.round((autoTrading.settings.max_deploy_pct ?? 0.8) * 100)}% vốn · stop-loss -
+            {autoTrading.settings.stop_loss_pct ?? 5}% · entry ≥ {autoTrading.settings.min_buy_score ?? 70}/100
             {autoTrading.risk ? (
               <>
                 {' '}
-                · drawdown {autoTrading.risk.drawdown_pct.toFixed(1)}% (giới hạn{' '}
-                {autoTrading.settings.max_drawdown_pct ?? 15}%)
+                · drawdown {autoTrading.risk.drawdown_pct.toFixed(1)}% (max{' '}
+                {autoTrading.settings.max_drawdown_pct ?? 10}%)
               </>
             ) : null}
           </p>

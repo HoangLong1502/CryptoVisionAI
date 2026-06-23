@@ -16,6 +16,7 @@ from app.services.crypto_data import (
 )
 from app.services.watchlist_store import get_effective_watchlist
 from app.services.crypto_technical import calculate_all_indicators, full_historical_analysis
+from app.services.trading_engine import evaluate_trading_engine
 
 AGENT_ROSTER = [
     {'id': 'MarketScanner', 'role': 'Trend & market liquidity analysis'},
@@ -55,17 +56,33 @@ class MarketScannerAgent(BaseAgent):
         hist = context.get('historical_analysis') or {}
         if hist.get('status') == 'no_data':
             return AgentResult(self.name, symbol, 'hold', 0.4, 'Insufficient historical data', {})
+
         trend = hist['trend']
         mom = hist['momentum']
+        sr = hist.get('support_resistance') or {}
+        range_pos = float((hist.get('overbought_oversold') or {}).get('normalized_position') or 50)
+
         score = 0.65 if trend['direction'] == 'uptrend' else 0.35 if trend['direction'] == 'downtrend' else 0.5
-        score = score * 0.6 + ((mom['score'] + 1) / 2) * 0.4
-        verdict = 'buy' if score >= 0.6 else 'sell' if score <= 0.4 else 'hold'
+        score = score * 0.55 + ((mom['score'] + 1) / 2) * 0.45
+
+        if range_pos >= 85:
+            score -= 0.12
+        elif range_pos <= 30:
+            score += 0.08
+
+        dist_res = float(sr.get('distance_to_resistance_pct') or 0)
+        if dist_res < 2 and trend['direction'] != 'uptrend':
+            score -= 0.10
+
+        score = max(0.0, min(1.0, score))
+        verdict = 'buy' if score >= 0.62 else 'sell' if score <= 0.38 else 'hold'
+
         detail = context.get('coin_detail') or {}
         vol_pct = detail.get('volume_to_mcap_pct', 0)
         rationale = (
-            f"Trend {trend['direction']}, momentum {mom['momentum']}. "
-            f"Volume/market cap ~{vol_pct}%. "
-            f"Support {hist['support_resistance']['support']}, resistance {hist['support_resistance']['resistance']}."
+            f"Trend {trend['direction']}, momentum {mom['momentum']}, range {range_pos:.0f}%. "
+            f"Volume/mcap ~{vol_pct}%. "
+            f"S/R {sr.get('support')}/{sr.get('resistance')}."
         )
         return AgentResult(self.name, symbol, verdict, score, rationale, {'trend': trend['direction']})
 
@@ -96,27 +113,40 @@ class TechnicalAnalystAgent(BaseAgent):
 
     async def evaluate(self, symbol: str, context: Dict[str, Any]) -> AgentResult:
         indicators = context.get('indicators') or {}
-        if not indicators:
+        hist = context.get('historical_analysis') or {}
+        if not indicators or hist.get('status') != 'ok':
             return AgentResult(self.name, symbol, 'hold', 0.5, 'Insufficient technical data', {})
-        rsi = indicators.get('rsi', {})
-        macd = indicators.get('macd', {})
-        rsi_sig = rsi.get('signal', 'neutral')
-        score = 0.5
-        if rsi_sig == 'oversold':
-            score = 0.75
-        elif rsi_sig == 'overbought':
-            score = 0.3
-        elif rsi_sig == 'bullish':
-            score = 0.65
-        elif rsi_sig == 'bearish':
-            score = 0.35
-        if 'bullish' in macd.get('crossover_signal', ''):
-            score = min(1.0, score + 0.1)
-        elif 'bearish' in macd.get('crossover_signal', ''):
-            score = max(0.0, score - 0.1)
-        verdict = 'buy' if score >= 0.65 else 'sell' if score <= 0.4 else 'hold'
-        rationale = f"RSI {rsi.get('rsi')} ({rsi_sig}), MACD {macd.get('crossover_signal')}."
-        return AgentResult(self.name, symbol, verdict, score, rationale, {'rsi': rsi.get('rsi')})
+
+        setup = context.get('buy_setup') or {}
+        conf = float(setup.get('confidence') or setup.get('score', 0.5) * 100)
+        score = conf / 100.0
+        quality = setup.get('quality', 'weak')
+        engine_decision = setup.get('decision', 'hold')
+
+        if setup.get('veto') or conf < 60:
+            verdict = 'hold' if engine_decision != 'sell' else 'sell'
+            score = min(score, 0.42)
+        elif engine_decision == 'buy' and quality in ('strong', 'moderate') and conf >= 70:
+            verdict = 'buy'
+        elif engine_decision == 'sell' or conf < 40:
+            verdict = 'sell'
+        else:
+            verdict = 'hold'
+
+        rsi = (indicators.get('rsi') or {}).get('rsi')
+        macd = (indicators.get('macd') or {}).get('crossover_signal', 'neutral')
+        factors = ', '.join(setup.get('bullish', [])[:3]) or 'none'
+        rationale = (
+            f"Confluence {setup.get('confluence', 0)} · quality {quality} · "
+            f"RSI {rsi}, MACD {macd}. Bullish: {factors}."
+        )
+        if setup.get('veto_reasons'):
+            rationale += f" Veto: {', '.join(setup['veto_reasons'])}."
+
+        return AgentResult(
+            self.name, symbol, verdict, score, rationale,
+            {'rsi': rsi, 'buy_quality': quality, 'confluence': setup.get('confluence', 0)},
+        )
 
 
 class SentimentAnalysisAgent(BaseAgent):
@@ -229,53 +259,70 @@ class DecisionMakerAgent(BaseAgent):
         history = context.get('history', [])
         if not history:
             return AgentResult(self.name, symbol, 'hold', 0.5, 'No agent data available', {})
+
         weights = {
-            'MarketScanner': 1.0, 'OnChainAnalyst': 1.1, 'TechnicalAnalyst': 1.2,
-            'SentimentAnalysis': 0.9, 'RiskManagement': 0.9, 'PortfolioAdvisor': 1.3,
+            'MarketScanner': 1.0,
+            'OnChainAnalyst': 0.9,
+            'TechnicalAnalyst': 1.4,
+            'SentimentAnalysis': 0.85,
+            'RiskManagement': 1.0,
+            'PortfolioAdvisor': 1.1,
         }
+        core_history = [r for r in history if r['agent'] != 'PortfolioAdvisor']
         weighted = []
-        for r in history:
+        for r in core_history:
             w = weights.get(r['agent'], 1.0)
             weighted.append(r['score'] * w)
-        avg = sum(weighted) / len(weighted)
-        verdicts = [r['verdict'] for r in history if r['agent'] != 'PortfolioAdvisor']
+        agent_avg = sum(weighted) / len(weighted) if weighted else 0.5
+
+        verdicts = [r['verdict'] for r in core_history]
         buy_c = verdicts.count('buy')
         sell_c = verdicts.count('sell')
         hold_c = verdicts.count('hold')
         consensus = max(buy_c, sell_c, hold_c) / max(len(verdicts), 1)
 
-        port = next((r for r in history if r['agent'] == 'PortfolioAdvisor'), None)
-        if port:
-            pv = port['verdict']
-            if pv == 'sell' and sell_c >= 1:
-                verdict = 'sell'
-            elif pv == 'buy' and buy_c >= 2:
-                verdict = 'buy'
-            elif buy_c > sell_c and buy_c >= 2:
-                verdict = 'buy'
-            elif sell_c > buy_c and sell_c >= 2:
-                verdict = 'sell'
-            else:
-                verdict = 'hold'
-        elif buy_c > sell_c and buy_c >= 2:
+        setup = context.get('buy_setup') or {}
+        setup_score = float(setup.get('confidence') or setup.get('score', 0.5) * 100) / 100.0
+        setup_conf = float(setup.get('confidence') or setup_score * 100)
+        setup_quality = setup.get('quality', 'weak')
+        setup_veto = bool(setup.get('veto'))
+        confluence = int(setup.get('confluence', 0))
+        engine_decision = setup.get('decision', 'hold')
+
+        tech = next((r for r in core_history if r['agent'] == 'TechnicalAnalyst'), None)
+        tech_buy = tech and tech['verdict'] == 'buy'
+
+        final_score = agent_avg * 0.25 + setup_score * 0.75
+
+        if setup_veto or setup_conf < 60:
+            verdict = 'sell' if sell_c >= 2 or engine_decision == 'sell' else 'hold'
+        elif engine_decision == 'buy' and setup_conf >= 70 and not setup_veto:
             verdict = 'buy'
-        elif sell_c > buy_c and sell_c >= 2:
+        elif setup_conf >= 65 and buy_c >= 2 and buy_c > sell_c and tech_buy and engine_decision != 'sell':
+            verdict = 'buy'
+        elif sell_c >= 2 or engine_decision == 'sell' or setup_conf < 40:
             verdict = 'sell'
         else:
             verdict = 'hold'
 
         holdings = float(context.get('user_holdings') or 0)
         chair_note = (
-            f"Crypto committee chair: {verdict.upper()}. "
-            f"Votes: {buy_c} buy, {hold_c} hold, {sell_c} sell. "
-            f"User position: {holdings} {symbol}."
+            f"Chair: {verdict.upper()} · confluence {confluence} · quality {setup_quality}. "
+            f"Votes {buy_c}B/{hold_c}H/{sell_c}S · engine {setup_conf:.0f}/100."
         )
-        rationale = chair_note + f" Confidence {avg:.0%}, consensus {consensus:.0%}."
+        rationale = chair_note + f" Blended confidence {final_score:.0%}, consensus {consensus:.0%}."
         return AgentResult(
-            self.name, symbol, verdict, avg, rationale,
+            self.name, symbol, verdict, final_score, rationale,
             {
-                'buy_agents': buy_c, 'sell_agents': sell_c, 'hold_agents': hold_c,
-                'consensus_strength': consensus, 'user_holdings': holdings,
+                'buy_agents': buy_c,
+                'sell_agents': sell_c,
+                'hold_agents': hold_c,
+                'consensus_strength': consensus,
+                'user_holdings': holdings,
+                'buy_setup_score': setup_conf / 100.0,
+                'buy_quality': setup_quality,
+                'confluence': confluence,
+                'setup_veto': setup_veto,
             },
         )
 
@@ -303,6 +350,8 @@ class CoinAgentOrchestrator:
         else:
             detail = await get_coin_detail(sym)
         indicators = await calculate_all_indicators(prices) if prices else {}
+        change_pct = float((detail or {}).get('change_pct') or 0) if detail else 0.0
+        buy_setup = evaluate_trading_engine(prices, change_pct_24h=change_pct) if len(prices) >= 30 else {}
 
         context: Dict[str, Any] = {
             'symbol': sym,
@@ -310,6 +359,7 @@ class CoinAgentOrchestrator:
             'historical_analysis': hist,
             'coin_detail': detail or {},
             'indicators': indicators,
+            'buy_setup': buy_setup,
             'history': [],
         }
 
@@ -341,6 +391,7 @@ class CoinAgentOrchestrator:
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'agents': context['history'],
             'decision': final.__dict__,
+            'buy_setup': buy_setup,
             'coin_detail': detail,
             'historical_prices': prices,
             'historical_analysis': hist,
@@ -397,13 +448,19 @@ class CoinAgentOrchestrator:
             sym = str(pick.get('symbol', '')).upper()
             if not sym:
                 continue
-            conf = float(pick.get('ai_confidence') or 0) / 100.0
+            conf = float(pick.get('buy_score') or pick.get('ai_confidence') or 0) / 100.0
             buy_votes = int(pick.get('ai_buy_votes') or 0)
             vote_factor = 0.55 + min(buy_votes, 5) * 0.09
+            quality = str(pick.get('buy_quality') or 'moderate')
+            quality_mult = {'strong': 1.25, 'moderate': 1.0, 'weak': 0.55, 'avoid': 0.0}.get(quality, 0.8)
+            if quality_mult <= 0:
+                continue
             risk_mult = await self._risk_multiplier_for(sym)
-            weights[sym] = max(0.01, conf * vote_factor * risk_mult)
+            confluence = int(pick.get('buy_confluence') or 0)
+            conf_mult = 0.85 + min(confluence, 6) * 0.03
+            weights[sym] = max(0.01, conf * vote_factor * risk_mult * quality_mult * conf_mult)
             confidences.append(conf)
-            risk_notes.append(f'{sym} risk×{risk_mult:.2f}')
+            risk_notes.append(f'{sym} {quality}×{quality_mult:.2f}')
 
         if not weights:
             return {
@@ -415,8 +472,7 @@ class CoinAgentOrchestrator:
             }
 
         avg_conf = sum(confidences) / len(confidences)
-        # Confident committee deploys more; uncertain committee keeps cash reserve.
-        deploy_ratio = min(0.98, max(0.15, avg_conf * 0.88 + 0.12))
+        deploy_ratio = min(0.92, max(0.20, avg_conf * 0.75 + 0.18))
         total_deploy = round(cash * deploy_ratio, 2)
         sum_w = sum(weights.values())
 

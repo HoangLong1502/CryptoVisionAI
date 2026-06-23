@@ -292,6 +292,9 @@ export type AutoTradingStatus = {
     stop_loss_pct: number;
     stop_loss_usd: number;
     max_drawdown_pct: number;
+    min_buy_score: number;
+    kill_consecutive_losses: number;
+    kill_daily_loss_pct: number;
     budget_mode: string;
   };
 };

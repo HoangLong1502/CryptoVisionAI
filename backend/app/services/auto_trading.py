@@ -28,6 +28,9 @@ def _default_state() -> Dict[str, Any]:
         'cooldowns': {},
         'recent_actions': [],
         'stats': {'total_buys': 0, 'total_sells': 0, 'cycles': 0, 'stop_losses': 0},
+        'consecutive_losses': 0,
+        'daily_pnl_usd': 0.0,
+        'daily_reset_date': None,
     }
 
 
@@ -44,6 +47,9 @@ def _load_state() -> Dict[str, Any]:
                 base.setdefault('risk_halted', False)
                 base.setdefault('risk_halt_reason', None)
                 base.setdefault('risk_halted_at', None)
+                base.setdefault('consecutive_losses', 0)
+                base.setdefault('daily_pnl_usd', 0.0)
+                base.setdefault('daily_reset_date', None)
                 return base
         except (json.JSONDecodeError, OSError, TypeError):
             pass
@@ -85,6 +91,9 @@ def _risk_settings() -> Dict[str, Any]:
         'stop_loss_usd': settings.auto_trade_stop_loss_usd,
         'max_drawdown_pct': settings.auto_trade_max_drawdown_pct,
         'min_profit_usd': settings.auto_trade_min_profit_usd,
+        'min_buy_score': settings.auto_trade_min_buy_score,
+        'kill_consecutive_losses': settings.auto_trade_kill_consecutive_losses,
+        'kill_daily_loss_pct': settings.auto_trade_kill_daily_loss_pct,
     }
 
 
@@ -155,6 +164,50 @@ def _halt_for_risk(state: Dict[str, Any], reason: str) -> None:
     state['last_error'] = reason
 
 
+def _today_utc() -> str:
+    return datetime.now(timezone.utc).strftime('%Y-%m-%d')
+
+
+def _sync_daily_pnl(state: Dict[str, Any], wallet: Dict[str, Any]) -> float:
+    today = _today_utc()
+    if state.get('daily_reset_date') != today:
+        state['daily_reset_date'] = today
+        initial = float(wallet.get('initial_balance_usd') or settings.paper_trading_initial_balance)
+        state['daily_start_equity'] = float(wallet.get('total_equity_usd') or initial)
+        state['daily_pnl_usd'] = 0.0
+    start_eq = float(state.get('daily_start_equity') or wallet.get('total_equity_usd') or 0)
+    state['daily_pnl_usd'] = float(wallet.get('total_equity_usd') or 0) - start_eq
+    return float(state['daily_pnl_usd'])
+
+
+def _check_kill_switch(state: Dict[str, Any], wallet: Dict[str, Any]) -> Optional[str]:
+    metrics = _wallet_risk_metrics(wallet)
+    if metrics['at_drawdown_limit']:
+        return (
+            f'Kill switch: drawdown {metrics["drawdown_pct"]:.1f}% ≥ '
+            f'{settings.auto_trade_max_drawdown_pct:.1f}%'
+        )
+
+    daily_pnl = _sync_daily_pnl(state, wallet)
+    initial = float(wallet.get('initial_balance_usd') or settings.paper_trading_initial_balance)
+    daily_loss_pct = max(0.0, -daily_pnl / initial * 100) if initial > 0 else 0.0
+    if daily_loss_pct >= settings.auto_trade_kill_daily_loss_pct:
+        return f'Kill switch: daily loss {daily_loss_pct:.1f}% ≥ {settings.auto_trade_kill_daily_loss_pct:.1f}%'
+
+    losses = int(state.get('consecutive_losses') or 0)
+    if losses >= settings.auto_trade_kill_consecutive_losses:
+        return f'Kill switch: {losses} consecutive losing trades'
+
+    return None
+
+
+def _record_sell_outcome(state: Dict[str, Any], pnl_usd: float) -> None:
+    if pnl_usd < 0:
+        state['consecutive_losses'] = int(state.get('consecutive_losses') or 0) + 1
+    else:
+        state['consecutive_losses'] = 0
+
+
 def get_status() -> Dict[str, Any]:
     from app.services.paper_trading import get_wallet_snapshot
 
@@ -209,11 +262,13 @@ def set_enabled(enabled: bool) -> Dict[str, Any]:
             _save_state(state)
 
     if blocked_msg:
+        status = get_status()
         status['ok'] = False
         status['message'] = blocked_msg
-    else:
-        _ensure_loop()
-    return status
+        return status
+
+    _ensure_loop()
+    return get_status()
 
 
 async def _ai_signal(symbol: str, holdings: float = 0.0) -> Dict[str, Any]:
@@ -242,6 +297,14 @@ async def run_cycle(*, force: bool = False) -> Dict[str, Any]:
         try:
             wallet = get_wallet_snapshot()
             metrics = _wallet_risk_metrics(wallet)
+
+            with _state_lock:
+                state = _load_state()
+                kill_reason = _check_kill_switch(state, wallet)
+                if kill_reason:
+                    _halt_for_risk(state, kill_reason)
+                    _save_state(state)
+                    return {'ok': False, 'halted': True, 'reason': kill_reason, 'actions': []}
 
             if metrics['at_drawdown_limit']:
                 held = {h['symbol']: h for h in wallet.get('holdings', [])}
@@ -313,6 +376,7 @@ async def run_cycle(*, force: bool = False) -> Dict[str, Any]:
                             _log_action(state, action)
                             state['stats']['total_sells'] = int(state['stats'].get('total_sells', 0)) + 1
                             state['stats']['stop_losses'] = int(state['stats'].get('stop_losses', 0)) + 1
+                            _record_sell_outcome(state, pnl_usd)
                             _save_state(state)
                     except ValueError as e:
                         actions.append({'side': 'sell', 'symbol': sym, 'skipped': True, 'error': str(e)})
@@ -335,6 +399,7 @@ async def run_cycle(*, force: bool = False) -> Dict[str, Any]:
                             state = _load_state()
                             _log_action(state, action)
                             state['stats']['total_sells'] = int(state['stats'].get('total_sells', 0)) + 1
+                            _record_sell_outcome(state, pnl_usd)
                             _save_state(state)
                     except ValueError as e:
                         actions.append({'side': 'sell', 'symbol': sym, 'skipped': True, 'error': str(e)})
@@ -360,12 +425,14 @@ async def run_cycle(*, force: bool = False) -> Dict[str, Any]:
                         'message': res['message'],
                         'ai_verdict': 'sell',
                         'ai_confidence': conf,
+                        'pnl_usd': round(pnl_usd, 2),
                     }
                     actions.append(action)
                     with _state_lock:
                         state = _load_state()
                         _log_action(state, action)
                         state['stats']['total_sells'] = int(state['stats'].get('total_sells', 0)) + 1
+                        _record_sell_outcome(state, pnl_usd)
                         _save_state(state)
                 except ValueError as e:
                     actions.append({'side': 'sell', 'symbol': sym, 'skipped': True, 'error': str(e)})
@@ -386,9 +453,17 @@ async def run_cycle(*, force: bool = False) -> Dict[str, Any]:
                         if _on_cooldown(state, sym):
                             continue
                     sig = await _ai_signal(sym, holdings=0.0)
-                    if str(sig.get('ai_verdict')) == 'buy' or sig.get('is_buy_pick'):
-                        row = {'symbol': sym, **sig}
-                        candidates.append(row)
+                    if not sig.get('is_buy_pick'):
+                        continue
+                    if sig.get('setup_veto'):
+                        continue
+                    buy_score = float(sig.get('buy_score') or 0)
+                    if buy_score < settings.auto_trade_min_buy_score:
+                        continue
+                    if str(sig.get('buy_quality')) not in ('strong', 'moderate'):
+                        continue
+                    row = {'symbol': sym, **sig}
+                    candidates.append(row)
 
                 if candidates:
                     from app.services.coin_agent_orchestrator import orchestrator

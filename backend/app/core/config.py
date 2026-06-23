@@ -20,12 +20,15 @@ class Settings(BaseSettings):
     auto_trade_interval_ms: int = 200
     auto_trade_cooldown_seconds: int = 300
     auto_trade_min_profit_usd: float = 0.25
+    auto_trade_min_buy_score: float = 70.0
+    auto_trade_kill_consecutive_losses: int = 5
+    auto_trade_kill_daily_loss_pct: float = 3.0
     # Risk limits — tránh cháy tài khoản
     auto_trade_max_deploy_pct: float = 0.80
     auto_trade_max_position_pct: float = 0.20
     auto_trade_stop_loss_pct: float = 5.0
     auto_trade_stop_loss_usd: float = 0.0
-    auto_trade_max_drawdown_pct: float = 15.0
+    auto_trade_max_drawdown_pct: float = 10.0
     performance_history_path: str = 'data/performance_history.json'
     performance_snapshot_min_seconds: int = 3600
 
